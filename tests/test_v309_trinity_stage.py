@@ -55,9 +55,9 @@ def test_stage_page_needs_no_inline_code_or_external_host():
 def test_stage_only_calls_known_read_endpoints_and_the_chat_post():
     js = (CONSOLE / "stage.js").read_text(encoding="utf-8")
     called = set(re.findall(r"(?:getJSON|fetch)\('(/[a-z/_]+)", js))
-    assert called == {"/ops/activity", "/status", "/ops/replay", "/chat/messages", "/chat", "/ops/roles", "/ops/mission/decide"}
-    assert js.count("method:'POST'") == 3                             # writes: chat to HEAD, a role change, a delivery decision
-    assert "'X-Solomon-Bridge':roleToken" in js                        # the role change carries the local token
+    assert called == {"/ops/activity", "/status", "/ops/replay", "/chat/messages", "/chat", "/ops/roles", "/ops/models", "/ops/mission/decide"}
+    assert js.count("method:'POST'") == 4                             # writes: chat to HEAD, role change, model change, delivery decision
+    assert "'X-Solomon-Bridge':roleToken" in js                        # role & model changes carry the local token
 
 
 def test_mission_calls_are_time_ordered_and_skip_running_rows():

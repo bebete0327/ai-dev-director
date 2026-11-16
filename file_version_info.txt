@@ -1,0 +1,29 @@
+# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(3, 1, 9, 0),
+    prodvers=(3, 1, 9, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'AI DEV DIRECTOR'),
+        StringStruct('FileDescription', 'AI DEV DIRECTOR · TRINITY Standalone Console'),
+        StringStruct('FileVersion', '3.1.9.0'),
+        StringStruct('InternalName', 'AI-Dev-Director'),
+        StringStruct('LegalCopyright', 'AI DEV DIRECTOR Local Orchestrator'),
+        StringStruct('OriginalFilename', 'AI-Dev-Director.exe'),
+        StringStruct('ProductName', 'AI DEV DIRECTOR'),
+        StringStruct('ProductVersion', '3.1.9.0')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

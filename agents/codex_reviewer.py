@@ -156,7 +156,13 @@ class CodexReviewer:
             "```"
         )
 
-        invocation_cmd = "codex exec --sandbox read-only - <stdin>"
+        from core.model_settings import normalize_model
+        chosen = normalize_model(self.model)
+        invocation_cmd = (
+            f"codex exec --model {chosen} --sandbox read-only - <stdin>"
+            if chosen
+            else "codex exec --sandbox read-only - <stdin>"
+        )
         self.logger.info(f"[Codex Reviewer] Subprocess execution: {self.executable} in {wt}")
 
         # Ensure cwd is a valid git repository before running Codex
@@ -169,7 +175,11 @@ class CodexReviewer:
         except Exception as e:
             self.logger.warning(f"[Codex Reviewer] git check exception: {e}")
 
-        cmd = [self.executable, "exec", "--sandbox", "read-only", "-"]
+        cmd = (
+            [self.executable, "exec", "--model", chosen, "--sandbox", "read-only", "-"]
+            if chosen
+            else [self.executable, "exec", "--sandbox", "read-only", "-"]
+        )
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=str(wt),

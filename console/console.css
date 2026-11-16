@@ -19,6 +19,11 @@
 .director-v2 .role-cycle:focus-visible { outline:2px solid #e0bb73; outline-offset:3px; }
 .director-v2 .role-cycle:disabled { opacity:.55; cursor:wait; }
 .director-v2 .role-notice { color:#a5bbcd; font-size:12px; line-height:1.6; margin:8px 2px 18px; }
+.director-v2 .model-picker-wrap { margin-top:8px; display:grid; gap:6px; }
+.director-v2 .model-select { width:100%; min-height:34px; padding:6px 8px; border:1px solid var(--border); border-radius:8px; background:#111d2b; color:var(--text); font:12px/1.4 'Segoe UI','Malgun Gothic',sans-serif; cursor:pointer; }
+.director-v2 .model-select:hover { border-color:#77b9e9; }
+.director-v2 .model-custom-row { display:flex; gap:6px; }
+.director-v2 .model-custom-row input { flex:1; min-width:0; padding:6px 8px; font-size:12px; }
 .ai-activity{margin-top:16px;padding:16px 18px;border:1px solid var(--border);border-radius:14px;background:var(--panel)}
 .ai-activity-head{margin-bottom:8px}
 .ai-now{display:grid;gap:6px;margin-bottom:14px}

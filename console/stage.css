@@ -128,6 +128,8 @@ body.ready .slot-label{opacity:1}
 .slot-label[data-slot="0"]::before{display:none}
 .slot-role{font:700 10.5px var(--num);letter-spacing:.2em;color:var(--muted)}
 .slot-name{font:650 21px/1.2 var(--body);color:var(--c);text-shadow:0 0 24px color-mix(in srgb,var(--c) 60%,transparent),0 1px 12px #000}
+.slot-model{display:inline-block;margin:2px 0 1px;padding:1px 8px;border-radius:99px;border:1px solid color-mix(in srgb,var(--c) 42%,var(--line2));background:rgba(8,12,22,.72);font:600 10.5px/1.45 var(--num);letter-spacing:.03em;color:var(--text);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot-model.default{color:var(--muted);border-color:var(--line)}
 .slot-status{font-size:12.5px;color:#c6d2e8;text-shadow:0 1px 8px #000}
 .slot-label.busy .slot-status{color:#fff;font-weight:600}
 .slot-label.busy .slot-status::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c);margin-right:7px;box-shadow:0 0 0 0 var(--c);animation:ping 1.3s infinite;vertical-align:1px}
@@ -143,15 +145,24 @@ body.ready .slot-label{pointer-events:auto;cursor:pointer}
 .slot-label:hover .slot-role{color:var(--text)}
 body.broadcast .slot-label,body.replaying .slot-label{pointer-events:none;cursor:default}
 body.broadcast .slot-role::after,body.replaying .slot-role::after{content:""}
-#role-menu{position:absolute;left:0;top:0;z-index:3;min-width:210px;padding:8px;border-radius:14px;background:rgba(7,10,19,.95);border:1px solid var(--line2);box-shadow:0 24px 60px #000b;pointer-events:auto;display:flex;flex-direction:column;gap:4px}
+#role-menu{position:absolute;left:0;top:0;z-index:3;min-width:276px;max-width:330px;max-height:min(74vh,520px);overflow-y:auto;padding:9px;border-radius:14px;background:rgba(7,10,19,.96);border:1px solid var(--line2);box-shadow:0 24px 60px #000c;pointer-events:auto;display:flex;flex-direction:column;gap:4px}
 #role-menu[hidden]{display:none}
-#role-menu p{margin:2px 6px 6px;font-size:11.5px;color:var(--muted)}
-#role-menu button{--c:#fff;display:flex;align-items:center;gap:9px;height:38px;padding:0 10px;border-radius:9px;border:1px solid transparent;background:transparent;text-align:left;font-size:13.5px;color:var(--text)}
-#role-menu button::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c)}
+#role-menu p{margin:2px 6px 4px;font-size:11.5px;color:var(--muted)}
+#role-menu hr{border:0;border-top:1px solid var(--line2);margin:6px 4px 4px}
+#role-menu button{--c:#fff;display:flex;align-items:center;gap:9px;min-height:36px;padding:4px 10px;border-radius:9px;border:1px solid transparent;background:transparent;text-align:left;font-size:13px;color:var(--text)}
+#role-menu button::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 10px var(--c)}
+#role-menu button.model-opt{font-size:12.5px;min-height:34px}
+#role-menu button.model-opt::before{width:6px;height:6px;opacity:.45;box-shadow:none}
+#role-menu button.model-opt.on::before{opacity:1;box-shadow:0 0 8px var(--c)}
 #role-menu button:hover{background:rgba(255,255,255,.07)}
-#role-menu button.on{border-color:var(--c)}
-#role-menu button small{margin-left:auto;color:var(--muted);font-size:11px}
+#role-menu button.on{border-color:var(--c);background:color-mix(in srgb,var(--c) 12%,transparent)}
+#role-menu button small{margin-left:auto;padding-left:8px;color:var(--muted);font-size:10.5px;white-space:nowrap}
 #role-menu button:disabled{opacity:.5;cursor:wait}
+#role-menu .model-custom{display:flex;gap:5px;margin-top:4px;padding:2px}
+#role-menu .model-custom input{flex:1;min-width:0;height:32px;padding:0 9px;border-radius:8px;border:1px solid var(--line2);background:rgba(255,255,255,.05);color:var(--text);font:12px var(--num)}
+#role-menu .model-custom input:focus{outline:0;border-color:#9cc4ff}
+#role-menu .model-custom button{min-height:32px;height:32px;padding:0 11px;border:1px solid var(--line2);background:rgba(255,255,255,.08);font-size:12px;justify-content:center}
+#role-menu .model-custom button::before{display:none}
 
 /* ---------- stinger: a title card each time the pipeline moves on; intro: the first three seconds */
 #stinger{--c:#fff;position:absolute;left:0;right:0;top:34%;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;opacity:0}

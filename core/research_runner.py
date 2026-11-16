@@ -44,29 +44,51 @@ class TriadResearchRunner:
     MAX_ATTEMPTS = 2   # initial attempt + 1 bounded retry; never more, per V3.0-H hardening scope
 
     def __init__(self, executables: Optional[Dict[str, str]] = None, timeout: float = 300.0,
-                 no_output_timeout: float = 180.0, heartbeat_interval: float = 30.0):
+                 no_output_timeout: float = 180.0, heartbeat_interval: float = 30.0,
+                 models: Optional[Dict[str, str]] = None):
+        from core.model_settings import domain_models
         configured = dict(executables or {})
         self.executables = {
             "OPENAI": configured.get("OPENAI") or resolve_cli("codex"),
             "ANTHROPIC": configured.get("ANTHROPIC") or resolve_cli("claude"),
             "GOOGLE": configured.get("GOOGLE") or resolve_cli("agy"),
         }
+        self.models = domain_models(models)
         self.timeout = timeout
         self.no_output_timeout = no_output_timeout
         self.heartbeat_interval = heartbeat_interval
         self._versions: Dict[str, str] = {}
 
     def _command(self, domain: str, executable: str, prompt: str):
+        chosen = (self.models or {}).get(domain, "")
         if domain == "OPENAI":
             # Codex official help: omitting PROMPT (or using '-') reads it from stdin.  This is required on
             # Windows where synthesis/cross-critique evidence can exceed CreateProcess' command-line limit.
+            if chosen:
+                return (
+                    [executable, "exec", "--model", chosen, "--sandbox", "read-only", "-"],
+                    prompt,
+                    f"codex exec --model {chosen} --sandbox read-only - <stdin>",
+                )
             return [executable, "exec", "--sandbox", "read-only", "-"], prompt, "codex exec --sandbox read-only - <stdin>"
         if domain == "ANTHROPIC":
+            if chosen:
+                return (
+                    [executable, "--print", "--output-format", "json", "--model", chosen],
+                    prompt,
+                    f"claude --print --output-format json --model {chosen}",
+                )
             return [executable, "--print", "--output-format", "json"], prompt, "claude --print --output-format json"
         if domain == "GOOGLE":
             # Official AGY stream-json mode reads NDJSON from stdin. This avoids Windows command-line limits
             # without file-read tools or permission bypasses, and exposes an explicit final result event.
             message = {"event": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}}
+            if chosen:
+                return (
+                    [executable, "--model", chosen, "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"],
+                    json.dumps(message, ensure_ascii=False) + "\n",
+                    f"agy --model {chosen} --input-format stream-json --output-format stream-json --sandbox <stdin>",
+                )
             return (
                 [executable, "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"],
                 json.dumps(message, ensure_ascii=False) + "\n",

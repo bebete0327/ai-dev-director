@@ -16,8 +16,9 @@ def load_config() -> dict:
         cfg_path = BUNDLE_ROOT / "config.yaml"
     if cfg_path.exists():
         with open(cfg_path, "r", encoding="utf-8") as f:
-            from core.role_settings import apply
-            return apply(yaml.safe_load(f) or {})
+            from core.role_settings import apply as apply_roles
+            from core.model_settings import apply as apply_models
+            return apply_models(apply_roles(yaml.safe_load(f) or {}))
     return {}
 
 @click.group()

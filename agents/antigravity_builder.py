@@ -116,7 +116,7 @@ class AntigravityBuilder:
             agent="BUILDER",
             provider="google",
             runtime="antigravity-cli",
-            model="antigravity-cli",
+            model=self.model or "antigravity-cli",
             executable=exec_path,
             invocation_command=invocation,
             version=version,
@@ -599,8 +599,11 @@ except Exception as e:
             "directly into the allowed paths."
         )
 
+        from core.model_settings import normalize_model
+        chosen_model = normalize_model(self.model)
+        model_prefix = f"--model {chosen_model} " if chosen_model else ""
         invocation_cmd = (
-            "agy --input-format stream-json --output-format stream-json "
+            f"agy {model_prefix}--input-format stream-json --output-format stream-json "
             "--mode accept-edits --sandbox <stdin>"
         )
         self.logger.info(f"[Antigravity Builder] Subprocess execution: {self.executable} in {wt}")
@@ -610,13 +613,15 @@ except Exception as e:
             # command line and provides an explicit terminal result event.  The same
             # protocol is used by the read-only TRIAD runner; Builder remains writable
             # only through the scoped settings installed above.
-            cmd = [
-                self.executable,
+            cmd = [self.executable]
+            if chosen_model:
+                cmd.extend(["--model", chosen_model])
+            cmd.extend([
                 "--input-format", "stream-json",
                 "--output-format", "stream-json",
                 "--mode", "accept-edits",
                 "--sandbox"
-            ]
+            ])
             active_prompt = prompt_text
             attempts = []
             final_event = None
