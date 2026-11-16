@@ -112,8 +112,12 @@ def run_smoke_test() -> int:
     """Self-test for packaged .exe builds: boots CompanionHandler on an ephemeral port, verifies UI + /ops/state + shutdown."""
     from types import SimpleNamespace
     from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
+    import scripts.pick_folder as _pf
     import companion_server
     import dashboard_server as d
+
+    if not callable(getattr(_pf, "main", None)):
+        raise RuntimeError("scripts.pick_folder.main missing")
 
     ensure_runtime_files(SOURCE_ROOT, BUNDLE_ROOT)
     d._ensure_schema()

@@ -104,3 +104,11 @@ def test_launcher_smoke_test_and_single_instance(monkeypatch):
     monkeypatch.setattr(launcher, "open_app_window", lambda url: opened.append(url))
     assert launcher.main([]) == 0
     assert opened and opened[0].startswith("http://127.0.0.1:")
+
+
+def test_launcher_pick_folder_flag_delegates_cleanly(monkeypatch):
+    import scripts.pick_folder as pf
+    called = []
+    monkeypatch.setattr(pf, "main", lambda: (called.append(list(sys.argv[1:])), 0)[1])
+    assert launcher.main(["--pick-folder", "C:/work"]) == 0
+    assert called == [["C:/work"]]
