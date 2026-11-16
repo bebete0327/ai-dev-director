@@ -97,10 +97,17 @@ def project_registry() -> list:
 
 
 class CompanionHandler(d.DashboardHandler):
+    def _touch_client(self):
+        import time
+        self.server.last_client_contact = time.monotonic()
+        self.server.had_client_contact = True
+
     def do_GET(self):
         if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0]:
             return self._send_json({'error': 'local requests only'}, 403)
         path = urlsplit(self.path).path
+        if path in STATIC_FILES or path in ('/ops/roles', '/ops/models', '/ops/activity', '/status', '/chat/messages'):
+            self._touch_client()
         try:                                    # a GET that carries a body: read it, or closing the socket with unread
             unread = int(self.headers.get('Content-Length') or 0)       # data resets the connection mid-response
         except ValueError:
@@ -109,7 +116,20 @@ class CompanionHandler(d.DashboardHandler):
             self.rfile.read(unread)
         if path == '/ops/roles':
             from core.role_settings import current
-            return self._send_json({'roles': current(d.load_config()), 'csrf': self.server.bridge_token})
+            from core import model_settings
+            return self._send_json({
+                'roles': current(d.load_config()),
+                'models': model_settings.load(),
+                'model_catalog': model_settings.catalog(),
+                'csrf': self.server.bridge_token,
+            })
+        if path == '/ops/models':
+            from core import model_settings
+            return self._send_json({
+                'models': model_settings.load(),
+                'catalog': model_settings.catalog(),
+                'csrf': self.server.bridge_token,
+            })
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (CONSOLE_ROOT / name).read_bytes()
@@ -182,6 +202,24 @@ class CompanionHandler(d.DashboardHandler):
                 return self._send_json({'error': str(exc)}, 400)
             except OSError:
                 return self._send_json({'error': '역할 설정을 저장하지 못했습니다.'}, 500)
+        if self.path == '/ops/models':
+            if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
+                return self._send_json({'error': 'local authenticated request required'}, 403)
+            try:
+                from core import model_settings
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 2048 or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('Invalid model request')
+                models = model_settings.save(json.loads(self.rfile.read(size)))
+                d.invalidate_status_cache()
+                return self._send_json({
+                    'models': models,
+                    'message': '모델 설정 저장됨 · 다음 AI 호출부터 적용됩니다.',
+                })
+            except (ValueError, TypeError, KeyError) as exc:
+                return self._send_json({'error': str(exc)}, 400)
+            except OSError:
+                return self._send_json({'error': '모델 설정을 저장하지 못했습니다.'}, 500)
         if self.path == '/ops/missions/stop':
             # 작업 정지 (2026-11-03): stop running missions + kill their CLI processes; the dashboard stays up.
             if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
@@ -207,7 +245,11 @@ class CompanionHandler(d.DashboardHandler):
                 self.rfile.read(unread)
             self.server.stopping = True
             logging.getLogger('director.companion').warning('shutdown requested from %s', self.headers.get('Referer') or 'local client')
-            import threading
+            try:
+                from core.process_runner import ProcessTreeRunner
+                ProcessTreeRunner.kill_active()
+            except Exception:
+                pass
             threading.Thread(target=self.server.shutdown, name='director-shutdown', daemon=True).start()
             return self._send_json({'stopping': True, 'message': 'AI DEV를 멈춥니다. 기록과 작업본은 남고, 다시 켜면 중단된 미션을 이어갑니다.'})
         if self.path == '/ops/pick-folder':
@@ -275,7 +317,8 @@ class CompanionHandler(d.DashboardHandler):
         return super().do_POST()
 
 
-def run():
+def create_server():
+    import time
     ensure_runtime_files(ROOT, BUNDLE_ROOT)
     config = json.loads((ROOT / 'companion.json').read_text(encoding='utf-8'))
     d._ensure_schema()
@@ -285,10 +328,16 @@ def run():
         token_path.write_text(secrets.token_urlsafe(48), encoding='utf-8')
     server.bridge_token = token_path.read_text(encoding='utf-8').strip()
     server.bridge = SolomonBridge(d, config.get('allowed_projects', []))
-    if (d.load_config().get('autonomy') or {}).get('resume_on_start'):
-        import threading
-        threading.Thread(target=d.resume_interrupted_missions, name='director-mission-resume', daemon=True).start()
     server.stopping = False
+    server.had_client_contact = False
+    server.last_client_contact = time.monotonic()
+    if (d.load_config().get('autonomy') or {}).get('resume_on_start'):
+        threading.Thread(target=d.resume_interrupted_missions, name='director-mission-resume', daemon=True).start()
+    return server
+
+
+def run():
+    server = create_server()
     print('AI DEV × SOLOMON http://127.0.0.1:' + str(server.server_address[1]), flush=True)
     try:
         server.serve_forever()

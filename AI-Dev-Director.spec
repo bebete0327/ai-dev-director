@@ -63,4 +63,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    uac_admin=False,
+    version=str(ROOT / "file_version_info.txt"),
 )

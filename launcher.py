@@ -14,8 +14,11 @@ from pathlib import Path
 from typing import List, Optional
 
 
+_IS_WINDOWS = os.name == "nt"
+
+
 def _show_error_dialog(title: str, message: str) -> None:
-    if os.name == "nt":
+    if _IS_WINDOWS:
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, str(message), str(title), 0x00000010)
@@ -27,6 +30,45 @@ def _show_error_dialog(title: str, message: str) -> None:
             sys.stderr.write(f"[{title}] {message}\n")
     except Exception:
         pass
+
+
+def _strip_zone_identifier(target: Path) -> bool:
+    """Remove NTFS Mark-of-the-Web (:Zone.Identifier) alternate data stream on Windows so Explorer
+    stops prompting 'Open File - Security Warning (untrusted publisher)' on subsequent launches."""
+    if not _IS_WINDOWS:
+        return False
+    ads_path = f"{target}:Zone.Identifier"
+    try:
+        import ctypes
+        if ctypes.windll.kernel32.DeleteFileW(str(ads_path)):
+            return True
+    except Exception:
+        pass
+    try:
+        os.remove(ads_path)
+        return True
+    except OSError:
+        return False
+
+
+def unblock_windows_files(root: Path) -> int:
+    """Best-effort removal of Zone.Identifier ADS from the executable and local scripts."""
+    if not _IS_WINDOWS:
+        return 0
+    removed = 0
+    targets = set()
+    if getattr(sys, "frozen", False) and sys.executable:
+        targets.add(Path(sys.executable))
+    try:
+        for p in root.iterdir():
+            if p.is_file() and p.suffix.lower() in {".exe", ".dll", ".ps1", ".cmd", ".bat"}:
+                targets.add(p)
+    except OSError:
+        pass
+    for target in targets:
+        if _strip_zone_identifier(target):
+            removed += 1
+    return removed
 
 
 def _redirect_null_streams(data_dir: Path) -> None:
@@ -62,7 +104,7 @@ def is_companion_alive(port: int, timeout: float = 1.5) -> bool:
 
 def _find_chromium_app_browser() -> Optional[str]:
     """Locate Edge or Chrome on Windows so the console opens as a clean standalone app window (--app=URL)."""
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         return None
     roots = [
         os.environ.get("ProgramFiles(x86)", ""),
@@ -87,29 +129,103 @@ def _find_chromium_app_browser() -> Optional[str]:
     return None
 
 
-def open_app_window(url: str) -> None:
+def open_app_window(url: str, profile_dir: Optional[Path] = None) -> Optional[subprocess.Popen]:
+    """Launch an isolated Edge/Chrome --app window and return its Popen handle so closing the window
+    can automatically shut down the server. Falls back to default browser if neither is found."""
     browser = _find_chromium_app_browser()
     if browser:
         try:
-            kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if os.name == "nt" else {}
-            subprocess.Popen([browser, f"--app={url}"], shell=False, **kwargs)
-            return
+            cmd = [browser, f"--app={url}", "--no-first-run", "--no-default-browser-check",
+                   "--disable-background-mode", "--disable-extensions", "--window-size=1460,920"]
+            if profile_dir is not None:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                cmd.append(f"--user-data-dir={profile_dir}")
+            kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if _IS_WINDOWS else {}
+            return subprocess.Popen(cmd, shell=False, **kwargs)
         except Exception:
             pass
     webbrowser.open(url)
+    return None
 
 
-def _open_when_ready(port: int, url: str, timeout: float = 15.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if is_companion_alive(port, timeout=1.0):
-            open_app_window(url)
-            return
-        time.sleep(0.15)
+def _shutdown_all(server, win_proc: Optional[subprocess.Popen] = None) -> None:
+    """Stop active CLI child processes, shut down the HTTP server, and close the app window if still open."""
+    server.stopping = True
+    try:
+        from core.process_runner import ProcessTreeRunner
+        ProcessTreeRunner.kill_active()
+    except Exception:
+        pass
+    if win_proc is not None and win_proc.poll() is None:
+        try:
+            from core.process_runner import ProcessTreeRunner
+            ProcessTreeRunner.kill_process_tree(win_proc.pid)
+        except Exception:
+            try:
+                win_proc.terminate()
+            except Exception:
+                pass
+    try:
+        server.shutdown()
+    except Exception:
+        pass
+
+
+def run_desktop_session(
+    server,
+    url: str,
+    profile_dir: Path,
+    startup_handoff_sec: float = 2.0,
+    idle_grace_sec: float = 18.0,
+    poll_interval: float = 0.25,
+) -> None:
+    """Run HTTP server and tie its lifecycle to the desktop app window:
+    - Closing the window (X button) automatically stops the server and active CLI child processes.
+    - Clicking '시스템 중지' in the UI automatically closes the app window and exits."""
+    port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, name="director-http", daemon=True)
+    server_thread.start()
+    try:
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            if is_companion_alive(port, timeout=1.0):
+                break
+            time.sleep(0.1)
+
+        win_proc = open_app_window(url, profile_dir=profile_dir)
+        launched_at = time.monotonic()
+        dedicated_window = False
+
+        while server_thread.is_alive() and not getattr(server, "stopping", False):
+            if win_proc is not None:
+                alive = win_proc.poll() is None
+                if alive and (time.monotonic() - launched_at) >= startup_handoff_sec:
+                    dedicated_window = True
+                if not alive:
+                    if dedicated_window:
+                        print("AI DEV window closed by user -> shutting down", flush=True)
+                        break
+                    # Browser process handed off immediately to an existing broker; switch to poll-lease mode.
+                    win_proc = None
+            else:
+                if getattr(server, "had_client_contact", False):
+                    idle_for = time.monotonic() - getattr(server, "last_client_contact", time.monotonic())
+                    if idle_for >= idle_grace_sec:
+                        print("AI DEV browser tab closed (idle timeout) -> shutting down", flush=True)
+                        break
+            time.sleep(poll_interval)
+    finally:
+        _shutdown_all(server, win_proc if "win_proc" in locals() else None)
+        server_thread.join(timeout=4.0)
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        print("AI DEV companion stopped", flush=True)
 
 
 def run_smoke_test() -> int:
-    """Self-test for packaged .exe builds: boots CompanionHandler on an ephemeral port, verifies UI + /ops/state + shutdown."""
+    """Self-test for packaged .exe builds: boots CompanionHandler on an ephemeral port, verifies UI + /ops/models + shutdown."""
     from types import SimpleNamespace
     from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
     import scripts.pick_folder as _pf
@@ -120,10 +236,13 @@ def run_smoke_test() -> int:
         raise RuntimeError("scripts.pick_folder.main missing")
 
     ensure_runtime_files(SOURCE_ROOT, BUNDLE_ROOT)
+    unblock_windows_files(SOURCE_ROOT)
     d._ensure_schema()
     server = d.DashboardServer(("127.0.0.1", 0), companion_server.CompanionHandler)
     server.bridge_token = "smoke-test-token"
     server.stopping = False
+    server.had_client_contact = False
+    server.last_client_contact = time.monotonic()
     server.bridge = SimpleNamespace(submit=lambda p: {"status": "submitted"}, list=lambda: [], allowed=set())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -134,10 +253,19 @@ def run_smoke_test() -> int:
         r1 = conn.getresponse()
         html = r1.read()
         conn.close()
-        if r1.status != 200 or b"AI DEV DIRECTOR" not in html:
+        if r1.status != 200 or b"AI DEV DIRECTOR" not in html or b"slot-model" not in html:
             raise RuntimeError(f"Unexpected root response: {r1.status}")
         if not is_companion_alive(port, timeout=3.0):
             raise RuntimeError("/ops/state check failed")
+
+        conn_m = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_m.request("GET", "/ops/models")
+        rm = conn_m.getresponse()
+        models_payload = json.loads(rm.read().decode("utf-8"))
+        conn_m.close()
+        if rm.status != 200 or "catalog" not in models_payload:
+            raise RuntimeError(f"/ops/models check failed: {rm.status}")
+
         conn2 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn2.request("POST", "/ops/shutdown", headers={"X-Solomon-Bridge": "smoke-test-token"})
         r2 = conn2.getresponse()
@@ -178,6 +306,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
     root = ensure_runtime_files(SOURCE_ROOT, BUNDLE_ROOT)
+    unblock_windows_files(root)
     _redirect_null_streams(root / "data")
 
     try:
@@ -186,8 +315,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception:
         port = 8081
     url = f"http://127.0.0.1:{port}"
+    profile_dir = root / "data" / "window_profile"
 
-    # Single-instance check: if already running, simply open the UI window and exit cleanly.
+    # Single-instance check: if already running, simply open/focus the UI window and exit cleanly.
     if is_companion_alive(port):
         open_app_window(url)
         return 0
@@ -198,11 +328,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     except OSError:
         pass
 
-    threading.Thread(target=_open_when_ready, args=(port, url), name="director-open-ui", daemon=True).start()
-
     try:
         import companion_server
-        companion_server.run()
+        server = companion_server.create_server()
+        run_desktop_session(server, url=url, profile_dir=profile_dir)
         return 0
     except OSError as exc:
         _show_error_dialog(

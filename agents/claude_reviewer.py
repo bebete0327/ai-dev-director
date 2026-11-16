@@ -156,10 +156,12 @@ class ClaudeReviewer:
             "```"
         )
 
-        invocation_cmd = 'claude --print'
+        from core.model_settings import normalize_model
+        chosen = normalize_model(self.model)
+        invocation_cmd = f"claude --print --model {chosen}" if chosen else 'claude --print'
         self.logger.info(f"[Claude Reviewer] Invoking via ProcessTreeRunner: {self.executable} in {wt}")
 
-        cmd = [self.executable, "--print"]
+        cmd = [self.executable, "--print"] + (["--model", chosen] if chosen else [])
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=str(wt),

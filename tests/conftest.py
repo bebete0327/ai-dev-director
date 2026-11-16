@@ -108,13 +108,12 @@ def isolate_provider_db(request, monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def pinned_role_settings(monkeypatch, tmp_path):
-    """The suite must not depend on the operator's local data/role_settings.json. The mode/truthfulness tests
-    (v0237/v0241/v0247) were written against the HEAD=OpenAI assignment, so every test starts from that manual
-    assignment in a private file; tests that exercise role_settings itself re-point PATH to their own file."""
-    from core import role_settings
+    """The suite must not depend on the operator's local data/role_settings.json or data/model_settings.json."""
+    from core import role_settings, model_settings
     pinned = tmp_path / "pinned_roles.json"
     pinned.write_text(json.dumps({"head": "openai", "builder": "antigravity", "reviewer": "claude"}), encoding="utf-8")
     monkeypatch.setattr(role_settings, "PATH", pinned)
+    monkeypatch.setattr(model_settings, "PATH", tmp_path / "pinned_models.json")
 
 
 @pytest.fixture(autouse=True)

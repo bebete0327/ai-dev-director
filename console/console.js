@@ -50,19 +50,44 @@ async function refresh(){if(busy||!doc||!doc.getElementById('mission-control'))r
 frame.addEventListener('load',setup);if(frame.contentDocument?.readyState==='complete')setup();setInterval(refresh,5000);
 
 async function setupRoles(){
- const domains={OPENAI:'openai',GOOGLE:'antigravity',ANTHROPIC:'claude'};
+ const domains={OPENAI:'openai',GOOGLE:'antigravity',ANTHROPIC:'claude'},aiLabel={OPENAI:'Codex',GOOGLE:'Antigravity',ANTHROPIC:'Claude'};
  const order=['head','builder','reviewer'],names={head:'HEAD · 작업 지휘',builder:'BUILDER · 코드 작성',reviewer:'REVIEWER · 검수'};
- let roles,csrf,saving=false;
- const notice=el('p','역할 불러오는 중…','role-notice');notice.setAttribute('aria-live','polite');doc.getElementById('corestrip').after(notice);
- const buttons={};
- function paint(){for(const [domain,provider] of Object.entries(domains)){const role=order.find(r=>roles[r]===provider);buttons[domain].textContent='다음: '+names[role]+' ↻';buttons[domain].disabled=saving;buttons[domain].setAttribute('aria-label',domain+' 역할 변경. 현재 예약 '+names[role]);}}
+ let roles,models={},catalog={},csrf,saving=false;
+ const notice=el('p','역할 및 모델 설정 불러오는 중…','role-notice');notice.setAttribute('aria-live','polite');doc.getElementById('corestrip').after(notice);
+ const buttons={},selects={},customRows={};
+ async function saveModel(provider,label,value){
+  saving=true;paint();
+  try{const response=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify({[provider]:value})});
+   const result=await response.json();if(!response.ok)throw Error(result.error||'모델 저장 실패');models=result.models||models;
+   notice.textContent=label+' 모델 저장됨: '+(models[provider]||'CLI 기본값')+' · 다음 호출부터 --model 적용';}
+  catch(error){notice.textContent='모델 변경 실패 · '+error.message;}finally{saving=false;paint();}
+ }
+ function paint(){
+  for(const [domain,provider] of Object.entries(domains)){
+   if(roles){const role=order.find(r=>roles[r]===provider);buttons[domain].textContent='다음: '+names[role]+' ↻';buttons[domain].disabled=saving;buttons[domain].setAttribute('aria-label',domain+' 역할 변경. 현재 예약 '+names[role]);}
+   const sel=selects[domain],crow=customRows[domain];if(!sel)continue;
+   const presets=catalog[provider]||[{id:'',label:'CLI 기본값'}],cur=models[provider]||'',known=presets.some(p=>p.id===cur);
+   sel.replaceChildren();
+   for(const p of presets){const o=el('option','모델: '+p.label+(p.id?' ('+p.id+')':''));o.value=p.id;sel.append(o);}
+   const customOpt=el('option',!known&&cur?'모델(직접 지정): '+cur:'모델 ID 직접 입력…');customOpt.value='__custom__';sel.append(customOpt);
+   sel.value=known?cur:'__custom__';sel.disabled=saving||!csrf;
+   if(crow){crow.hidden=known;if(!known&&cur)crow.firstChild.value=cur;}
+  }
+ }
  for(const [domain,provider] of Object.entries(domains)){
-  const button=el('button','역할 연결 중…','role-cycle');button.type='button';button.disabled=true;buttons[domain]=button;doc.getElementById('node-'+domain)?.append(button);
+  const node=doc.getElementById('node-'+domain);
+  const button=el('button','역할 연결 중…','role-cycle');button.type='button';button.disabled=true;buttons[domain]=button;
+  const wrap=el('div','','model-picker-wrap'),sel=el('select','','model-select');sel.disabled=true;sel.setAttribute('aria-label',aiLabel[domain]+' 모델 선택');selects[domain]=sel;
+  const crow=el('div','','model-custom-row'),cinp=el('input',''),cbtn=el('button','적용');cinp.type='text';cinp.placeholder='모델 ID 입력 (비우면 기본값)';cbtn.type='button';crow.hidden=true;crow.append(cinp,cbtn);customRows[domain]=crow;
+  sel.onchange=()=>{if(sel.value==='__custom__'){crow.hidden=false;cinp.focus();return;}crow.hidden=true;saveModel(provider,aiLabel[domain],sel.value);};
+  cbtn.onclick=()=>saveModel(provider,aiLabel[domain],cinp.value.trim());
+  cinp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveModel(provider,aiLabel[domain],cinp.value.trim());}};
+  wrap.append(sel,crow);node?.append(button,wrap);
   button.onclick=async()=>{if(saving||!roles)return;saving=true;paint();const next={...roles},current=order.find(r=>roles[r]===provider),target=order[(order.indexOf(current)+1)%3];next[current]=roles[target];next[target]=provider;
    try{const response=await fetch('/ops/roles',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify(next)});const result=await response.json();if(!response.ok)throw Error(result.error||'저장 실패');roles=result.roles;notice.textContent=result.message;}
    catch(error){notice.textContent='역할 변경 실패 · '+error.message;}finally{saving=false;paint();}};
  }
- try{const response=await fetch('/ops/roles',{cache:'no-store'});if(!response.ok)throw Error('설정 조회 실패');const result=await response.json();roles=result.roles;csrf=result.csrf;paint();notice.textContent='버튼을 누르면 역할이 순환하고 상대 AI와 교환됩니다. 다음 대화/작업부터 적용 · 현재 실행과 TRIAD 연구 배정은 유지';}catch(error){notice.textContent=error.message;}
+ try{const response=await fetch('/ops/roles',{cache:'no-store'});if(!response.ok)throw Error('설정 조회 실패');const result=await response.json();roles=result.roles;models=result.models||{};catalog=result.model_catalog||{};csrf=result.csrf;paint();notice.textContent='각 AI 카드에서 역할 순환 및 CLI 모델(--model)을 바로 고를 수 있습니다. 다음 대화/작업부터 적용됩니다.';}catch(error){notice.textContent=error.message;}
 }
 
 // ---------------------------------------------------------------- AI work visibility (missions, who works now, workload)
@@ -158,7 +183,7 @@ function setupFolderPicker(){
 function showVeil(title,detail){
  let veil=document.getElementById('shutdown-veil');
  if(!veil){veil=document.createElement('div');veil.id='shutdown-veil';document.body.append(veil);}
- veil.innerHTML='<div><strong></strong><p class="veil-detail"></p><p>다시 켜려면 솔로몬 집무실 상단의 <code>AI DEV 켜기</code> 버튼, 또는 <code>start-companion.ps1</code>을 실행하세요.</p></div>';
+ veil.innerHTML='<div><strong></strong><p class="veil-detail"></p><p>다시 켜려면 <code>AI-Dev-Director.exe</code>를 다시 실행하세요. (그냥 창 우측 상단 <code>X</code>를 눌러 닫아도 시스템이 함께 종료됩니다.)</p></div>';
  veil.querySelector('strong').textContent=title;veil.querySelector('.veil-detail').textContent=detail||'';
  document.body.classList.add('offline');
 }
@@ -179,6 +204,7 @@ setInterval(async()=>{try{const r=await fetch('/ops/roles',{cache:'no-store'});i
    const r=await fetch('/ops/shutdown',{method:'POST',headers:{'X-Solomon-Bridge':roles.csrf}});const j=await r.json();
    if(!r.ok)throw Error(j.error||'중지 실패');
    window.__stoppedByButton=true;showVeil('AI DEV가 멈췄습니다',j.message);
+   setTimeout(()=>{try{window.close();}catch(e){}},350);
   }catch(e){alert('중지 실패 · '+e.message);b.disabled=false;b.textContent='시스템 중지';}
  };
 })();
