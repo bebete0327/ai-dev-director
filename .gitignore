@@ -18,3 +18,5 @@ companion.local.json
 *.sqlite3
 build/
 dist/
+.venv/
+venv/
