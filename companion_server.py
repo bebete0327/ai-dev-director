@@ -9,9 +9,11 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 import dashboard_server as d
+from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
 from core.solomon_bridge import SolomonBridge
 
-ROOT = Path(__file__).resolve().parent
+ROOT = SOURCE_ROOT
+CONSOLE_ROOT = (BUNDLE_ROOT / 'console') if (BUNDLE_ROOT / 'console').exists() else (ROOT / 'console')
 # The console is a fixed allowlist of local files: nothing outside console/ is ever served.
 STATIC_FILES = {'/': 'index.html', '/console.js': 'console.js', '/console.css': 'console.css',
                 '/stage.css': 'stage.css', '/trinity.js': 'trinity.js', '/stage.js': 'stage.js'}
@@ -25,8 +27,10 @@ def pick_folder(initial: str = "", timeout: int = 300) -> dict:
     if not _PICK_LOCK.acquire(blocking=False):
         return {"error": "폴더 선택 창이 이미 열려 있습니다."}
     try:
-        out = subprocess.run([sys.executable, str(ROOT / "scripts" / "pick_folder.py"), initial or ""],
-                             capture_output=True, timeout=timeout)
+        argv = ([sys.executable, "--pick-folder", initial or ""]
+                if getattr(sys, "frozen", False)
+                else [sys.executable, str(ROOT / "scripts" / "pick_folder.py"), initial or ""])
+        out = subprocess.run(argv, capture_output=True, timeout=timeout)
         if out.returncode != 0:
             return {"error": "폴더 선택 창을 열지 못했습니다."}
         return {"path": str(json.loads(out.stdout.decode("ascii") or "{}").get("path", ""))}
@@ -108,7 +112,7 @@ class CompanionHandler(d.DashboardHandler):
             return self._send_json({'roles': current(d.load_config()), 'csrf': self.server.bridge_token})
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
-            body = (ROOT / 'console' / name).read_bytes()
+            body = (CONSOLE_ROOT / name).read_bytes()
             self.send_response(200)
             self.send_header('Content-Type', {'html': 'text/html', 'js': 'text/javascript', 'css': 'text/css'}[name.rsplit('.', 1)[1]] + '; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
@@ -272,6 +276,7 @@ class CompanionHandler(d.DashboardHandler):
 
 
 def run():
+    ensure_runtime_files(ROOT, BUNDLE_ROOT)
     config = json.loads((ROOT / 'companion.json').read_text(encoding='utf-8'))
     d._ensure_schema()
     server = d.DashboardServer(('127.0.0.1', config.get('port', 8081)), CompanionHandler)

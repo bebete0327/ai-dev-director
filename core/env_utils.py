@@ -1,7 +1,8 @@
 import os
 import shutil
+import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 FORBIDDEN_API_KEYS = [
     "OPENAI_API_KEY",
@@ -100,6 +101,14 @@ def resolve_cli(name: str) -> Optional[str]:
     return None
 
 
+def windows_subprocess_kwargs() -> Dict[str, Any]:
+    """Suppress flashing child CMD windows on Windows when running inside a windowless frozen .exe."""
+    if os.name == "nt" and (getattr(sys, "frozen", False) or os.environ.get("DIRECTOR_NO_CONSOLE") == "1"):
+        import subprocess
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+    return {}
+
+
 def run_capture(argv, cwd=None, timeout=None, env=None):
     """
     subprocess.run wrapper for short non-AI commands (git, --version probes).
@@ -117,6 +126,7 @@ def run_capture(argv, cwd=None, timeout=None, env=None):
         shell=False,
         timeout=timeout,
         env=env,
+        **windows_subprocess_kwargs(),
     )
 
 

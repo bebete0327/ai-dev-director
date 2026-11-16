@@ -40,9 +40,12 @@ class Verifier:
             if not argv:
                 return {"command": cmd_str, "executed": False, "passed": True, "output": "Empty command"}
 
-            # Resolve python to current interpreter if invoked as python/python3
+            # Resolve python to current interpreter when running from source; in a frozen .exe, use system Python
             if argv[0] in ("python", "python3"):
-                argv[0] = sys.executable
+                if getattr(sys, "frozen", False):
+                    argv[0] = shutil.which(argv[0]) or shutil.which("python") or shutil.which("py") or argv[0]
+                else:
+                    argv[0] = sys.executable
             else:
                 resolved = shutil.which(argv[0])
                 if resolved:
