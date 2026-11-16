@@ -467,3 +467,21 @@ def test_claude_three_bars_codex_unified_weekly_and_antigravity_four_bars(tmp_pa
     assert a_wins[1]["right_text"] == "2시간 37분 후 초기화 · 81% 남음"
     assert a_wins[2]["right_text"] == "4일 23시간 후 초기화 · 51% 남음"
     assert a_wins[3]["right_text"] == "미사용 · 100% 남음"
+
+
+def test_cloud_remote_access_and_auth_sync_bundle(monkeypatch):
+    import dashboard_server as d
+
+    # Default desktop mode: LAN/cloud Host headers are rejected
+    monkeypatch.delenv("DIRECTOR_REMOTE_ACCESS", raising=False)
+    assert d.is_request_origin_allowed({"Host": "100.64.1.25:8081"}, 8081)[0] is False
+
+    # Cloud/Mobile mode enabled: Tailscale / Cloud VM / Mobile Host headers are allowed
+    monkeypatch.setenv("DIRECTOR_REMOTE_ACCESS", "1")
+    assert d.is_request_origin_allowed({"Host": "100.64.1.25:8081"}, 8081)[0] is True
+    assert d.is_request_origin_allowed(
+        {"Host": "100.64.1.25:8081", "Origin": "http://100.64.1.25:8081"}, 8081
+    )[0] is True
+    assert d.is_request_origin_allowed(
+        {"Host": "100.64.1.25:8081", "Origin": "http://evil.example.com"}, 8081
+    )[0] is False

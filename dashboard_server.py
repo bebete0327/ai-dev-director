@@ -113,10 +113,47 @@ class DashboardServer(ThreadingHTTPServer):
 ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 
 
+def is_remote_access_enabled() -> bool:
+    """Return True when cloud/mobile remote access mode is explicitly enabled via env or companion.json."""
+    env_val = os.environ.get("DIRECTOR_REMOTE_ACCESS", "").strip().lower()
+    if env_val in ("1", "true", "yes", "on"):
+        return True
+    if env_val in ("0", "false", "no", "off") or os.environ.get("DIRECTOR_TESTING") == "1":
+        return False
+    try:
+        cfg_path = SOURCE_ROOT / "companion.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and bool(cfg.get("remote_access")):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def is_request_origin_allowed(headers, port: int):
-    """Minimal CSRF defence for state-changing POSTs: Host must be localhost:<port>; if an Origin header is
-    present it must be http://localhost:<port> too. Returns (ok, reason)."""
+    """Minimal CSRF defence for state-changing POSTs: Host must be localhost:<port> by default; when
+    cloud/mobile remote access is enabled, any valid Host with matching same-host Origin is allowed."""
     host = (headers.get("Host") or "").strip().lower()
+    if is_remote_access_enabled():
+        if not host:
+            return False, "missing Host header"
+        origin = headers.get("Origin")
+        if origin is not None:
+            origin = origin.strip().lower()
+            host_only = host.split(":", 1)[0]
+            allowed_origins = {
+                f"http://{host}",
+                f"https://{host}",
+                f"http://{host_only}",
+                f"https://{host_only}",
+                f"http://127.0.0.1:{port}",
+                f"http://localhost:{port}",
+            }
+            if origin == "null" or origin not in allowed_origins:
+                return False, f"foreign Origin: {origin!r}"
+        return True, ""
+
     allowed_hosts = {f"{h}:{port}" for h in ALLOWED_HOSTNAMES}
     if port == 80:
         allowed_hosts |= set(ALLOWED_HOSTNAMES)
