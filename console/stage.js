@@ -48,7 +48,7 @@ let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSett
 async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;repaint();}catch(e){/* keep the last known roles */}}
 async function refreshUsageLimits(manual){
   const btn=$('btn-refresh-usage');if(manual&&btn){btn.disabled=true;btn.textContent='갱신 중…';}
-  try{quotaSnapshot=await getJSON('/ops/usage-limits');paintQuotas();}
+  try{quotaSnapshot=await getJSON('/ops/usage-limits'+(manual?'?force=1':''));paintQuotas();}
   catch(e){if(manual)notice('사용량 조회 실패 · '+e.message);}
   finally{if(manual&&btn){btn.disabled=false;btn.textContent='↻ 새로고침';}}
 }
@@ -307,11 +307,16 @@ function paintQuotas(){
     const info=quotaSnapshot.providers[ck];if(!info)continue;
     const row=el('div','','quota-row'+(info.state==='warning'?' warn':info.state==='exhausted'?' exhausted':''));
     row.style.setProperty('--c',AI[dom].css);
-    const rl=info.rate_limits,pct=rl&&rl.primary_percent!=null?rl.primary_percent:null;
-    const rightTxt=pct!=null?('5h '+pct+'%'+(rl.secondary_percent!=null?' · 주간 '+rl.secondary_percent+'%':'')):(info.health==='QUOTA_EXCEEDED'?'한도 초과':('오늘 '+info.today_calls+'회 · '+tok(info.today_tokens)+' 토큰'));
+    const rl=info.rate_limits,pct=rl&&rl.primary_percent!=null?rl.primary_percent:null,sec=rl&&rl.secondary_percent!=null?rl.secondary_percent:null,opus=rl&&rl.opus_weekly_percent!=null?rl.opus_weekly_percent:null;
+    const parts=[];
+    if(pct!=null)parts.push('5h '+pct+'%'+(rl.primary_expired?'(리셋됨)':''));
+    if(sec!=null)parts.push('주간 '+sec+'%');
+    if(opus!=null)parts.push('Opus '+opus+'%');
+    const rightTxt=parts.length?parts.join(' · '):(info.health==='QUOTA_EXCEEDED'?'한도 초과':('24h '+info.today_calls+'회 · '+tok(info.today_tokens)+' 토큰'));
     const top=el('div','','quota-top');top.append(el('b',AI[dom].name+' · '+info.model+(info.effort&&info.effort!=='기본값'?' ('+info.effort+')':'')),el('span',rightTxt));
     const bar=el('div','','quota-bar'),fill=el('i');
-    fill.style.width=(pct!=null?Math.min(100,Math.max(4,pct)):(info.state==='exhausted'?100:Math.min(100,info.today_calls*8)))+'%';
+    const maxPct=Math.max(pct||0,sec||0,opus||0);
+    fill.style.width=((pct!=null||sec!=null||opus!=null)?Math.min(100,Math.max(3,maxPct)):(info.state==='exhausted'?100:Math.min(100,info.today_calls*8)))+'%';
     bar.append(fill);
     const modelsText=(info.by_model||[]).slice(0,2).map(x=>x.model+' '+x.calls+'회/'+tok(x.tokens)).join(' · ');
     row.append(top,bar);
