@@ -58,6 +58,14 @@ class Orchestrator:
         chosen = effective_model(provider, configured_model=configured, config=self.config)
         return chosen or (configured if configured and not overridden else default_label)
 
+    def _resolve_role_effort(self, provider: str, role_cfg: dict, overridden: bool) -> str:
+        from core.model_settings import effective_effort
+        configured = None if overridden else role_cfg.get("effort")
+        try:
+            return effective_effort(provider, configured_effort=configured, config=self.config)
+        except ValueError:
+            return effective_effort(provider, configured_effort=None, config=self.config)
+
     def _init_head(self, provider_override: Optional[str] = None) -> BaseHead:
         head_cfg = self.config.get("head", {})
         provider = (provider_override or head_cfg.get("provider", "openai")).lower()
@@ -69,13 +77,16 @@ class Orchestrator:
         if provider in ('google', 'antigravity'):
             from agents.google_roles import GoogleHead
             g_model = self._resolve_role_model(provider, head_cfg, "antigravity-cli", overridden=bool(provider_override))
-            return GoogleHead(executable=executable, model=g_model, timeout=timeout, no_progress_timeout=no_progress_timeout)
+            g_effort = self._resolve_role_effort(provider, head_cfg, overridden=bool(provider_override))
+            return GoogleHead(executable=executable, model=g_model, effort=g_effort, timeout=timeout, no_progress_timeout=no_progress_timeout)
         if provider in ("claude", "anthropic"):
             c_model = self._resolve_role_model(provider, head_cfg, "claude-code-cli", overridden=bool(provider_override))
-            return ClaudeHead(executable=executable, model=c_model, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+            c_effort = self._resolve_role_effort(provider, head_cfg, overridden=bool(provider_override))
+            return ClaudeHead(executable=executable, model=c_model, effort=c_effort, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
         elif provider in ("codex", "openai"):
             o_model = self._resolve_role_model(provider, head_cfg, "codex-cli", overridden=bool(provider_override))
-            return CodexHead(executable=executable, model=o_model, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+            o_effort = self._resolve_role_effort(provider, head_cfg, overridden=bool(provider_override))
+            return CodexHead(executable=executable, model=o_model, effort=o_effort, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
         elif provider == "mock":
             return MockHead(model=head_cfg.get("model", "cli-default"))
         else:
@@ -85,6 +96,7 @@ class Orchestrator:
         b_cfg = self.config.get("builder", {})
         provider = (provider_override or b_cfg.get("provider", "google")).lower()
         model = self._resolve_role_model(provider, b_cfg, "antigravity-cli", overridden=bool(provider_override))
+        effort = self._resolve_role_effort(provider, b_cfg, overridden=bool(provider_override))
         executable = b_cfg.get("executable") if not provider_override else None
         approved = self.config.get("safety", {}).get("approved_commands")
         timeout = self.timeouts.get("builder", 600)
@@ -94,9 +106,9 @@ class Orchestrator:
         if b_cfg.get('mode') == 'proposal':
             from agents.proposal_builder import ProposalBuilder
             return ProposalBuilder(provider=provider, approved_commands=approved,
-                model=model, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout,
+                model=model, effort=effort, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout,
                 heartbeat_interval=heartbeat_interval)
-        return cls(approved_commands=approved, model=model, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+        return cls(approved_commands=approved, model=model, effort=effort, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
 
     def _init_reviewer(self, provider_override: Optional[str] = None) -> Any:
         rev_cfg = self.config.get("reviewer", {})
@@ -109,12 +121,15 @@ class Orchestrator:
         if provider in ('google', 'antigravity'):
             from agents.google_roles import GoogleReviewer
             g_model = self._resolve_role_model(provider, rev_cfg, "antigravity-cli", overridden=bool(provider_override))
-            return GoogleReviewer(executable=executable, model=g_model, timeout=timeout, no_progress_timeout=no_progress_timeout)
+            g_effort = self._resolve_role_effort(provider, rev_cfg, overridden=bool(provider_override))
+            return GoogleReviewer(executable=executable, model=g_model, effort=g_effort, timeout=timeout, no_progress_timeout=no_progress_timeout)
         if provider in ("claude", "anthropic"):
             c_model = self._resolve_role_model(provider, rev_cfg, "claude-code-cli", overridden=bool(provider_override))
-            return ClaudeReviewer(provider="anthropic", model=c_model, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+            c_effort = self._resolve_role_effort(provider, rev_cfg, overridden=bool(provider_override))
+            return ClaudeReviewer(provider="anthropic", model=c_model, effort=c_effort, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
         o_model = self._resolve_role_model(provider, rev_cfg, "codex-cli", overridden=bool(provider_override))
-        return CodexReviewer(provider="openai", model=o_model, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+        o_effort = self._resolve_role_effort(provider, rev_cfg, overridden=bool(provider_override))
+        return CodexReviewer(provider="openai", model=o_model, effort=o_effort, executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
 
     def _get_run_dir(self, run_id: str) -> Path:
         from core.db_path import SOURCE_ROOT

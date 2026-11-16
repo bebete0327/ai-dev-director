@@ -157,7 +157,9 @@ class ProposalBuilder(AntigravityBuilder):
                      + json.dumps(omitted) if omitted else ''))
         domain = self.provider.upper()
         runner = TriadResearchRunner(executables={domain: self.executable}, timeout=self.timeout,
-                                     no_output_timeout=self.no_progress_timeout, models={domain: self.model})
+                                     no_output_timeout=self.no_progress_timeout,
+                                     models={domain: self.model},
+                                     efforts={domain: getattr(self, 'effort', '')})
         with tempfile.TemporaryDirectory(prefix='director-builder-') as tmp:
             prepare_project(tmp)
             try:

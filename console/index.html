@@ -78,6 +78,10 @@
     <small id="total-sub" class="total-sub">호출 0회 · CLI 0초</small>
     <div id="share-bar" class="share" aria-hidden="true"><i data-p="ANTHROPIC"></i><i data-p="GOOGLE"></i><i data-p="OPENAI"></i></div>
     <div id="role-rows"></div>
+    <section id="quota-box" class="quota-box">
+      <div class="quota-head"><span class="kicker">모델별 사용량 · 한도</span><button type="button" id="btn-refresh-usage" class="quota-refresh" title="사용량 및 한도 새로고침">↻ 새로고침</button></div>
+      <div id="quota-rows"></div>
+    </section>
     <section class="feed">
       <span class="kicker">최근 AI 호출</span>
       <ol id="call-feed"></ol>

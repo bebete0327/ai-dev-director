@@ -28,6 +28,7 @@ class CodexReviewer:
         self,
         provider: str = "openai",
         model: str = "codex-cli",
+        effort: Optional[str] = None,
         executable: Optional[str] = None,
         timeout: int = 300,
         no_progress_timeout: int = 180,
@@ -36,6 +37,7 @@ class CodexReviewer:
     ):
         self.provider = provider or "openai"
         self.model = model
+        self.effort = effort or ""
         self.timeout = timeout
         self.no_progress_timeout = no_progress_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -156,13 +158,20 @@ class CodexReviewer:
             "```"
         )
 
-        from core.model_settings import normalize_model
+        from core.model_settings import effective_effort, normalize_model
         chosen = normalize_model(self.model)
-        invocation_cmd = (
-            f"codex exec --model {chosen} --sandbox read-only - <stdin>"
-            if chosen
-            else "codex exec --sandbox read-only - <stdin>"
-        )
+        chosen_effort = effective_effort("openai", self.effort)
+        cmd = [self.executable, "exec"]
+        desc = ["codex", "exec"]
+        if chosen:
+            cmd.extend(["--model", chosen])
+            desc.extend(["--model", chosen])
+        if chosen_effort:
+            cmd.extend(["-c", f"model_reasoning_effort={chosen_effort}"])
+            desc.extend(["-c", f"model_reasoning_effort={chosen_effort}"])
+        cmd.extend(["--sandbox", "read-only", "-"])
+        desc.extend(["--sandbox", "read-only", "-", "<stdin>"])
+        invocation_cmd = " ".join(desc)
         self.logger.info(f"[Codex Reviewer] Subprocess execution: {self.executable} in {wt}")
 
         # Ensure cwd is a valid git repository before running Codex
@@ -175,11 +184,6 @@ class CodexReviewer:
         except Exception as e:
             self.logger.warning(f"[Codex Reviewer] git check exception: {e}")
 
-        cmd = (
-            [self.executable, "exec", "--model", chosen, "--sandbox", "read-only", "-"]
-            if chosen
-            else [self.executable, "exec", "--sandbox", "read-only", "-"]
-        )
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=str(wt),
