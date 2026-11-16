@@ -68,7 +68,15 @@ python -m pytest -q            # 604개 테스트, CLI 없이 스텁으로 돕�
 기대하는 옛 UI 테스트인데 v3.0부터 빈 폴더도 자동 준비(greenfield)하도록 바뀌었고, 하나는 스냅샷 제외 목록 픽스처
 드리프트입니다. 안전 게이트·정책·미션 테스트는 모두 통과합니다.
 
-콘솔 켜기 (윈도우):
+콘솔 켜기 — 독립 실행 파일 (`AI-Dev-Director.exe`, 윈도우 무콘솔):
+
+```powershell
+# 저장소 루트에 포함된 AI-Dev-Director.exe 를 바로 더블클릭하면 실행됩니다 (검은 터미널 창 없음).
+# 코드를 수정한 뒤 .exe를 다시 빌드하려면:
+.\build-exe.ps1                # 루트의 AI-Dev-Director.exe 갱신 및 dist\AI-Dev-Director-win64.zip 생성
+```
+
+콘솔 켜기 (윈도우 스크립트):
 
 ```powershell
 .\start-companion.ps1          # http://127.0.0.1:8081  (TRINITY 무대)  ·  /classic (작업실)

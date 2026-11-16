@@ -40,7 +40,9 @@ def _sha(p: Path) -> str:
 
 
 def _git(args: List[str], cwd: str) -> Tuple[int, str, str]:
-    r = subprocess.run(["git", "-c", "core.quotepath=false"] + args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    from core.env_utils import windows_subprocess_kwargs
+    r = subprocess.run(["git", "-c", "core.quotepath=false"] + args, cwd=cwd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", **windows_subprocess_kwargs())
     return r.returncode, r.stdout, r.stderr
 
 
@@ -59,7 +61,8 @@ class ResultManager:
     # ------------------------------------------------------------------ artifacts
     @staticmethod
     def run_dir(run_id: str) -> Path:
-        return Path(__file__).resolve().parent.parent / "runs" / run_id
+        from core.db_path import SOURCE_ROOT
+        return SOURCE_ROOT / "runs" / run_id
 
     def _load(self, run_id: str, name: str):
         p = self.run_dir(run_id) / name
@@ -575,8 +578,10 @@ class ResultManager:
         """Blob ids exactly as git would store these working files (line-ending conversion included), in one call."""
         if not rels:
             return {}
+        from core.env_utils import windows_subprocess_kwargs
         r = subprocess.run(["git", "-c", "core.quotepath=false", "hash-object", "--stdin-paths"], cwd=str(root),
-                           input="\n".join(rels) + "\n", capture_output=True, text=True, encoding="utf-8", errors="replace")
+                           input="\n".join(rels) + "\n", capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", **windows_subprocess_kwargs())
         if r.returncode:
             return {}
         return dict(zip(rels, r.stdout.split()))

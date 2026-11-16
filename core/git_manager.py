@@ -11,6 +11,7 @@ class GitManager:
 
     @staticmethod
     def _run_git(cmd: list, cwd: Path) -> str:
+        from core.env_utils import windows_subprocess_kwargs
         res = subprocess.run(
             # Non-ASCII file names verbatim (UTF-8), never as quoted octal escapes: a Korean file name once reached the
             # Scope Guard as "docs/\353\246..." and was reported as a path escaping the worktree.
@@ -20,7 +21,8 @@ class GitManager:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            **windows_subprocess_kwargs(),
         )
         if res.returncode != 0:
             raise GitManagerError(f"Git command failed: {' '.join(cmd)}\nError: {res.stderr.strip()}")

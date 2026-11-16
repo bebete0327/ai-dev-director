@@ -749,13 +749,15 @@ except Exception as e:
                 pass
 
             # Discover modified files from git diff in worktree
+            from core.env_utils import windows_subprocess_kwargs
             diff_res = subprocess.run(
                 ["git", "-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"],
                 cwd=str(wt),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                encoding="utf-8"
+                encoding="utf-8",
+                **windows_subprocess_kwargs(),
             )
             if diff_res.returncode != 0:
                 return BuilderResultSchema(

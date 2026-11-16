@@ -3,8 +3,9 @@ import json
 import os
 import threading
 from pathlib import Path
+from core.db_path import SOURCE_ROOT
 
-PATH = Path(__file__).resolve().parent.parent / 'data' / 'role_settings.json'
+PATH = SOURCE_ROOT / 'data' / 'role_settings.json'
 LOCK = threading.Lock()
 ALIASES = {'codex': 'openai', 'openai': 'openai', 'claude': 'claude',
            'anthropic': 'claude', 'google': 'antigravity', 'antigravity': 'antigravity'}

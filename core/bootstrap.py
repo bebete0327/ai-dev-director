@@ -4,7 +4,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
+from core.db_path import SOURCE_ROOT
+from core.env_utils import windows_subprocess_kwargs
+
 # What a milestone hands to the next one. A missing extension is not harmless: a web game's '.cjs' tests and new
 # 'data/*.json' files were dropped between milestones and every following step failed on "the tests disappeared".
 SUFFIXES = {'.py', '.pyi', '.md', '.txt', '.toml', '.yaml', '.yml', '.json', '.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.vue',
@@ -14,7 +16,7 @@ SUFFIXES = {'.py', '.pyi', '.md', '.txt', '.toml', '.yaml', '.yml', '.json', '.j
 
 def git(root, *args, env=None):
     p = subprocess.run(['git', *args], cwd=str(root), env=env, input='', capture_output=True,
-                       text=True, encoding='utf-8', errors='replace', timeout=30)
+                       text=True, encoding='utf-8', errors='replace', timeout=30, **windows_subprocess_kwargs())
     if p.returncode: raise ValueError(p.stderr.strip())
     return p.stdout.strip()
 

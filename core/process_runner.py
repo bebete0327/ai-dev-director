@@ -88,13 +88,15 @@ class ProcessTreeRunner:
         # 1. Primary on Windows: taskkill takes the whole tree down in one call
         if os.name == "nt":
             try:
+                from core.env_utils import windows_subprocess_kwargs
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     shell=False,
-                    timeout=5
+                    timeout=5,
+                    **windows_subprocess_kwargs(),
                 )
             except Exception as e:
                 logger.warning(f"taskkill failed on PID {pid}: {e}")
@@ -196,6 +198,7 @@ class ProcessTreeRunner:
         logger.info(f"[ProcessTreeRunner] Starting: {argv} (cwd={cwd}, timeout={timeout}s)")
 
         # Start process with shell=False
+        from core.env_utils import windows_subprocess_kwargs
         process = subprocess.Popen(
             argv,
             cwd=cwd,
@@ -206,7 +209,8 @@ class ProcessTreeRunner:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            **windows_subprocess_kwargs(),
         )
         pid = process.pid
         with _ACTIVE_LOCK:

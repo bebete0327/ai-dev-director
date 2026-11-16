@@ -1233,7 +1233,7 @@ def build_status_payload() -> dict:
     state = raw_state
     recovered = None
     if current_run and raw_state == State.FAIL:
-        recovery_path = Path(__file__).resolve().parent / "runs" / current_run['run_id'] / "recovery.json"
+        recovery_path = DIRECTOR_ROOT / "runs" / current_run['run_id'] / "recovery.json"
         try:
             candidate = json.loads(recovery_path.read_text(encoding="utf-8"))
             if candidate.get("status") == "VERIFIED" and candidate.get("project_path") == current_run['project_path']:

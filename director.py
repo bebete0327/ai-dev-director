@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Optional
 import click
 
+from core.db_path import SOURCE_ROOT, BUNDLE_ROOT
 from core.orchestrator import Orchestrator
 from core.state_machine import StateMachine, State
 
 def load_config() -> dict:
-    cfg_path = Path(__file__).resolve().parent / "config.yaml"
+    cfg_path = SOURCE_ROOT / "config.yaml"
+    if not cfg_path.exists():
+        cfg_path = BUNDLE_ROOT / "config.yaml"
     if cfg_path.exists():
         with open(cfg_path, "r", encoding="utf-8") as f:
             from core.role_settings import apply
@@ -111,7 +114,7 @@ def do(goal: str, project: Optional[str], profile: Optional[str], no_apply: bool
     profile = profile or tag or "standard"
     payload = {"request_id": "cli-" + uuid.uuid4().hex[:16], "project_path": str(Path(target).resolve()), "goal": goal,
                "profile": profile, "auto_apply": "off" if no_apply else None}
-    token_path = Path(__file__).resolve().parent / "data" / "solomon-bridge.token"
+    token_path = SOURCE_ROOT / "data" / "solomon-bridge.token"
     try:
         req = urllib.request.Request("http://127.0.0.1:8081/bridge/missions", data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json", "X-Solomon-Bridge": token_path.read_text(encoding="utf-8").strip()})

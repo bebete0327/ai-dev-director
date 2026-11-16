@@ -16,3 +16,5 @@ companion.local.json
 *.token
 *.db
 *.sqlite3
+build/
+dist/
