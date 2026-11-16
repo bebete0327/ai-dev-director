@@ -308,11 +308,11 @@ def test_reasoning_effort_settings_and_cli_flags(tmp_path, monkeypatch):
         "/bin/agy", "--model", "Gemini 4 Argon", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
     ]
 
-    # Codex & Claude local quota snapshot parsing
+    # Codex & Claude local quota snapshot parsing (active vs expired resets_at)
     codex_dir = tmp_path / "codex_sessions"
     codex_dir.mkdir()
     (codex_dir / "rollout-1.jsonl").write_text(
-        json.dumps({"payload": {"info": {"rate_limits": {"primary": {"used_percent": 32.5, "resets_at": 1700000000}, "secondary": {"used_percent": 11.0}}}}}) + "\n",
+        json.dumps({"payload": {"info": {"rate_limits": {"primary": {"used_percent": 32.5, "resets_at": 2000000000}, "secondary": {"used_percent": 11.0, "resets_at": 1500000000}}}}}) + "\n",
         encoding="utf-8",
     )
     claude_dir = tmp_path / "claude_projects" / "proj"
@@ -321,9 +321,13 @@ def test_reasoning_effort_settings_and_cli_flags(tmp_path, monkeypatch):
         json.dumps({"uuid": "u1", "message": {"id": "m1", "model": "claude-opus-5-5", "usage": {"input_tokens": 1200, "output_tokens": 300}}}) + "\n",
         encoding="utf-8",
     )
-    snap = quota_tracker.snapshot(codex_dir=codex_dir, claude_dir=tmp_path / "claude_projects")
+    snap = quota_tracker.snapshot(codex_dir=codex_dir, claude_dir=tmp_path / "claude_projects", now_ts=1700000000.0)
     assert snap["providers"]["openai"]["rate_limits"]["primary_percent"] == 32.5
-    assert snap["providers"]["openai"]["rate_limits"]["secondary_percent"] == 11.0
+    assert snap["providers"]["openai"]["rate_limits"]["primary_expired"] is False
+    assert snap["providers"]["openai"]["rate_limits"]["secondary_percent"] == 0.0
+    assert snap["providers"]["openai"]["rate_limits"]["secondary_expired"] is True
+    assert snap["providers"]["claude"]["today_calls"] == 1
+    assert snap["providers"]["claude"]["today_tokens"] == 1500
     assert any(m["model"] == "claude-opus-5-5" and m["tokens"] == 1500 for m in snap["providers"]["claude"]["by_model"])
 
 

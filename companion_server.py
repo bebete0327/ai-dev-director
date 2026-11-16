@@ -137,7 +137,8 @@ class CompanionHandler(d.DashboardHandler):
             })
         if path == '/ops/usage-limits':
             from core import quota_tracker
-            return self._send_json(quota_tracker.snapshot())
+            force = parse_qs(urlsplit(self.path).query).get('force', [''])[0] == '1'
+            return self._send_json(quota_tracker.snapshot(force=force))
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (CONSOLE_ROOT / name).read_bytes()
