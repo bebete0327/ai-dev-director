@@ -13,9 +13,10 @@ python -m PyInstaller --clean --noconfirm AI-Dev-Director.spec
 
 $pkgDir = Join-Path $PSScriptRoot "dist\AI-Dev-Director-win64"
 New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
-Copy-Item "dist\AI-Dev-Director.exe" -Destination $pkgDir
-Copy-Item "config.yaml" -Destination $pkgDir
-Copy-Item "companion.json" -Destination $pkgDir
+Copy-Item "dist\AI-Dev-Director.exe" -Destination $pkgDir -Force
+Copy-Item "dist\AI-Dev-Director.exe" -Destination (Join-Path $PSScriptRoot "AI-Dev-Director.exe") -Force
+Copy-Item "config.yaml" -Destination $pkgDir -Force
+Copy-Item "companion.json" -Destination $pkgDir -Force
 
 Write-Host "Running packaged executable smoke test..." -ForegroundColor Yellow
 & (Join-Path $pkgDir "AI-Dev-Director.exe") --smoke-test

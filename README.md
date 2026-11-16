@@ -71,10 +71,9 @@ python -m pytest -q            # 604개 테스트, CLI 없이 스텁으로 돕�
 콘솔 켜기 — 독립 실행 파일 (`AI-Dev-Director.exe`, 윈도우 무콘솔):
 
 ```powershell
-# 1) GitHub Actions Artifacts 또는 Releases에서 AI-Dev-Director-win64 다운로드 후
-#    AI-Dev-Director.exe 더블클릭 (검은 터미널 창 없이 전용 앱 창이 바로 열림)
-# 2) 로컬에서 직접 .exe 빌드하려면:
-.\build-exe.ps1                # dist\AI-Dev-Director-win64\AI-Dev-Director.exe 및 .zip 생성
+# 저장소 루트에 포함된 AI-Dev-Director.exe 를 바로 더블클릭하면 실행됩니다 (검은 터미널 창 없음).
+# 코드를 수정한 뒤 .exe를 다시 빌드하려면:
+.\build-exe.ps1                # 루트의 AI-Dev-Director.exe 갱신 및 dist\AI-Dev-Director-win64.zip 생성
 ```
 
 콘솔 켜기 (윈도우 스크립트):
