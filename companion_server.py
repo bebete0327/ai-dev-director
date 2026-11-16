@@ -332,12 +332,24 @@ class CompanionHandler(d.DashboardHandler):
         return super().do_POST()
 
 
-def create_server():
+def create_server(bind_host: str = ""):
+    import os
     import time
     ensure_runtime_files(ROOT, BUNDLE_ROOT)
     config = json.loads((ROOT / 'companion.json').read_text(encoding='utf-8'))
     d._ensure_schema()
-    server = d.DashboardServer(('127.0.0.1', config.get('port', 8081)), CompanionHandler)
+    remote = d.is_remote_access_enabled()
+    host = (
+        bind_host
+        or os.environ.get('DIRECTOR_BIND_HOST', '').strip()
+        or ('0.0.0.0' if remote else str(config.get('bind_host') or '127.0.0.1'))
+    )
+    if host != '127.0.0.1':
+        os.environ['DIRECTOR_REMOTE_ACCESS'] = '1'
+    port = int(os.environ.get('DIRECTOR_PORT') or config.get('port', 8081))
+    if os.name != 'nt':
+        d.DashboardServer.allow_reuse_address = True
+    server = d.DashboardServer((host, port), CompanionHandler)
     token_path = ROOT / 'data' / 'solomon-bridge.token'
     if not token_path.exists():
         token_path.write_text(secrets.token_urlsafe(48), encoding='utf-8')
@@ -352,8 +364,12 @@ def create_server():
 
 
 def run():
+    import os
+    if '--cloud' in sys.argv or '--remote' in sys.argv:
+        os.environ['DIRECTOR_REMOTE_ACCESS'] = '1'
     server = create_server()
-    print('AI DEV × SOLOMON http://127.0.0.1:' + str(server.server_address[1]), flush=True)
+    host, port = server.server_address[:2]
+    print(f'AI DEV × SOLOMON http://{host}:{port}', flush=True)
     try:
         server.serve_forever()
     finally:
@@ -363,3 +379,4 @@ def run():
 
 if __name__ == '__main__':
     run()
+

@@ -304,6 +304,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         director.cli()
         return 0
 
+    # 4. 24/7 Cloud / Mobile headless background server mode: python3 launcher.py --cloud
+    if args and args[0] in ("--cloud", "--headless", "--remote"):
+        os.environ["DIRECTOR_REMOTE_ACCESS"] = "1"
+        from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
+        ensure_runtime_files(SOURCE_ROOT, BUNDLE_ROOT)
+        import companion_server
+        companion_server.run()
+        return 0
+
     from core.db_path import SOURCE_ROOT, BUNDLE_ROOT, ensure_runtime_files
     root = ensure_runtime_files(SOURCE_ROOT, BUNDLE_ROOT)
     unblock_windows_files(root)
