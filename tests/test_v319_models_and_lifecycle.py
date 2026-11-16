@@ -349,3 +349,121 @@ def test_http_usage_limits_and_effort_post(http_server, tmp_path, monkeypatch):
     out = json.loads(post_body)
     assert out["efforts"]["claude"] == "high"
     assert out["efforts"]["openai"] == "xhigh"
+
+
+def test_claude_three_bars_codex_unified_weekly_and_antigravity_four_bars(tmp_path):
+    import base64
+    import sqlite3
+    from core import quota_tracker
+
+    now_ts = 1763305260.0  # Fixed reference timestamp
+
+    # 1. Claude: 3 bars (5시간 제한, 주간 · 모든 모델, 주간 · Fable) + reset times
+    claude_payload = {
+        "five_hour": {"utilization": 100.0, "resets_at": now_ts + 7200},
+        "seven_day": {"utilization": 54.0, "resets_at": now_ts + 172800},
+        "seven_day_sonnet": {"utilization": 100.0, "resets_at": now_ts + 172800},
+        "seven_day_opus": None,
+    }
+    c_parsed = quota_tracker._parse_claude_oauth_payload(claude_payload, now_ts=now_ts)
+    assert c_parsed is not None
+    c_wins = c_parsed["windows"]
+    assert [w["label"] for w in c_wins] == ["5시간 제한", "주간 · 모든 모델", "주간 · Fable"]
+    assert [w["used_pct"] for w in c_wins] == [100.0, 54.0, 100.0]
+    assert all("초기화" in w["right_text"] for w in c_wins)
+    assert c_wins[0]["state"] == "exhausted"
+    assert c_wins[1]["state"] == "ok"
+    assert c_wins[2]["state"] == "exhausted"
+
+    # 2. Codex: unified weekly limit from /wham/usage (0% 남음, 1일 23시간 후 초기화)
+    wham_payload = {
+        "plan_type": "plus",
+        "rate_limit": {
+            "allowed": False,
+            "limit_reached": True,
+            "primary_window": {
+                "used_percent": 100,
+                "limit_window_seconds": 604800,
+                "reset_after_seconds": 170400,
+                "reset_at": int(now_ts + 170400),
+            },
+            "secondary_window": None,
+        },
+    }
+    x_parsed = quota_tracker._parse_codex_wham_payload(wham_payload, now_ts=now_ts)
+    assert x_parsed is not None
+    x_wins = x_parsed["windows"]
+    assert len(x_wins) == 1
+    assert x_wins[0]["label"] == "주간 사용 한도"
+    assert x_wins[0]["used_pct"] == 100.0
+    assert x_wins[0]["remaining_pct"] == 0.0
+    assert "1일 23시간 후 초기화" in x_wins[0]["right_text"]
+    assert "0% 남음" in x_wins[0]["right_text"]
+    assert x_wins[0]["state"] == "exhausted"
+
+    # 3. Antigravity: 4 bars (Gemini Weekly/5h + Claude/GPT Weekly/5h) + state.vscdb nested base64 token extraction
+    vscdb = tmp_path / "state.vscdb"
+    fake_tok = "ya29.a0AfB_byCdefghijklmnopqrstuvwxyz1234567890"
+    inner_b64 = base64.b64encode(f"proto_prefix:{fake_tok}:suffix".encode("utf-8")).decode("ascii")
+    outer_b64 = base64.b64encode(f"wrap:{inner_b64}".encode("utf-8")).decode("ascii")
+    with sqlite3.connect(str(vscdb)) as conn:
+        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+            ("antigravityUnifiedStateSync.oauthToken", outer_b64),
+        )
+    extracted = quota_tracker._extract_agy_oauth_token(vscdb)
+    assert extracted == fake_tok
+
+    agy_payload = {
+        "groups": [
+            {
+                "displayName": "Gemini Models",
+                "buckets": [
+                    {
+                        "bucketId": "gemini-weekly",
+                        "displayName": "Weekly Limit Remaining",
+                        "remaining": {"remainingFraction": 0.45},
+                        "description": "You have used some of your weekly limit, it will fully refresh in 4 days, 9 hours.",
+                    },
+                    {
+                        "bucketId": "gemini-5h",
+                        "displayName": "Five Hour Limit Remaining",
+                        "remaining": {"remainingFraction": 0.81},
+                        "description": "You have used some of your five hour limit, it will fully refresh in 2 hours, 37 minutes.",
+                    },
+                ],
+            },
+            {
+                "displayName": "Claude and GPT models",
+                "buckets": [
+                    {
+                        "bucketId": "3p-weekly",
+                        "displayName": "Weekly Limit Remaining",
+                        "remaining": {"remainingFraction": 0.51},
+                        "description": "You have used some of your weekly limit, it will fully refresh in 4 days, 23 hours.",
+                    },
+                    {
+                        "bucketId": "3p-5h",
+                        "displayName": "Five Hour Limit Remaining",
+                        "remaining": {"remainingFraction": 1.0},
+                        "description": "You have not used any of your five hour limit.",
+                    },
+                ],
+            },
+        ]
+    }
+    a_parsed = quota_tracker._parse_antigravity_quota_payload(agy_payload, now_ts=now_ts)
+    assert a_parsed is not None
+    a_wins = a_parsed["windows"]
+    assert [w["label"] for w in a_wins] == [
+        "Gemini · 주간 한도",
+        "Gemini · 5시간 한도",
+        "Claude/GPT · 주간 한도",
+        "Claude/GPT · 5시간 한도",
+    ]
+    assert [w["remaining_pct"] for w in a_wins] == [45.0, 81.0, 51.0, 100.0]
+    assert a_wins[0]["right_text"] == "4일 9시간 후 초기화 · 45% 남음"
+    assert a_wins[1]["right_text"] == "2시간 37분 후 초기화 · 81% 남음"
+    assert a_wins[2]["right_text"] == "4일 23시간 후 초기화 · 51% 남음"
+    assert a_wins[3]["right_text"] == "미사용 · 100% 남음"
