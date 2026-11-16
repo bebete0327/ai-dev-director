@@ -73,6 +73,36 @@ def reported_tokens(provider: str, stdout: str, stderr: str) -> Optional[Dict[st
 
 # ------------------------------------------------------------------ storage
 
+def _extract_cli_meta(argv: List[str]) -> Dict[str, str]:
+    """Extract --model and reasoning effort (--effort or -c model_reasoning_effort=...) from CLI argv."""
+    model = ""
+    effort = ""
+    args = [str(a) for a in (argv or [])]
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in ("--model", "-m") and i + 1 < len(args):
+            model = args[i + 1].strip()
+            i += 2
+            continue
+        if tok.startswith("--model="):
+            model = tok.split("=", 1)[1].strip()
+        elif tok == "--effort" and i + 1 < len(args):
+            effort = args[i + 1].strip().lower()
+            i += 2
+            continue
+        elif tok.startswith("--effort="):
+            effort = tok.split("=", 1)[1].strip().lower()
+        elif tok in ("-c", "--config") and i + 1 < len(args):
+            kv = args[i + 1]
+            if kv.startswith("model_reasoning_effort="):
+                effort = kv.split("=", 1)[1].strip().strip('"').strip("'").lower()
+            i += 2
+            continue
+        i += 1
+    return {"model": model[:120], "effort": effort[:32]}
+
+
 def _conn() -> sqlite3.Connection:
     from core.db_path import get_db_path
     conn = sqlite3.connect(str(get_db_path()), timeout=10)
@@ -82,7 +112,12 @@ def _conn() -> sqlite3.Connection:
         provider TEXT NOT NULL, role TEXT, stage TEXT, run_id TEXT, mission_id TEXT, pid INTEGER,
         duration_sec REAL, prompt_chars INTEGER, output_chars INTEGER,
         tokens_in INTEGER, tokens_out INTEGER, tokens_total INTEGER, tokens_exact INTEGER DEFAULT 0,
-        exit_code INTEGER, source TEXT DEFAULT 'live')""")
+        exit_code INTEGER, source TEXT DEFAULT 'live', model TEXT DEFAULT '', effort TEXT DEFAULT '')""")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_usage)").fetchall()}
+    if "model" not in cols:
+        conn.execute("ALTER TABLE ai_usage ADD COLUMN model TEXT DEFAULT ''")
+    if "effort" not in cols:
+        conn.execute("ALTER TABLE ai_usage ADD COLUMN effort TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_started ON ai_usage(started_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_mission ON ai_usage(mission_id)")
     return conn
@@ -94,12 +129,13 @@ def call_started(argv: List[str], prompt: Optional[str]) -> Optional[int]:
     if not provider or not (prompt or "").strip():
         return None
     ctx = context()
+    meta = _extract_cli_meta(argv)
     with _conn() as conn:
         cur = conn.execute(
-            "INSERT INTO ai_usage (started_at, status, provider, role, stage, run_id, mission_id, pid, prompt_chars) "
-            "VALUES (?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ai_usage (started_at, status, provider, role, stage, run_id, mission_id, pid, prompt_chars, model, effort) "
+            "VALUES (?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (datetime.utcnow().isoformat(), provider, ctx.get("role"), ctx.get("stage"), ctx.get("run_id"),
-             ctx.get("mission_id"), os.getpid(), len(prompt or "")))
+             ctx.get("mission_id"), os.getpid(), len(prompt or ""), meta["model"], meta["effort"]))
         return cur.lastrowid
 
 

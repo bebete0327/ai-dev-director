@@ -44,8 +44,14 @@ async function getJSON(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok
 
 // ------------------------------------------------------------------ model
 const CLI={claude:'ANTHROPIC',antigravity:'GOOGLE',openai:'OPENAI'},CLI_OF={ANTHROPIC:'claude',GOOGLE:'antigravity',OPENAI:'openai'};
-let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={};   // next-task roles + per-CLI --model settings
-async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;repaint();}catch(e){/* keep the last known roles */}}
+let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSettings={},effortCatalog={},quotaSnapshot=null;
+async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;repaint();}catch(e){/* keep the last known roles */}}
+async function refreshUsageLimits(manual){
+  const btn=$('btn-refresh-usage');if(manual&&btn){btn.disabled=true;btn.textContent='갱신 중…';}
+  try{quotaSnapshot=await getJSON('/ops/usage-limits');paintQuotas();}
+  catch(e){if(manual)notice('사용량 조회 실패 · '+e.message);}
+  finally{if(manual&&btn){btn.disabled=false;btn.textContent='↻ 새로고침';}}
+}
 function assignment(){
   if(roleSettings&&!isLiveNow())return {HEAD:CLI[roleSettings.head],BUILDER:CLI[roleSettings.builder],REVIEWER:CLI[roleSettings.reviewer]};
   const a={...DEFAULT_ASSIGN},prov=(status&&status.providers)||{};
@@ -59,11 +65,26 @@ async function saveProviderModel(cliKey,aiName,val,menu){
     const res=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':roleToken},body:JSON.stringify({[cliKey]:val})}),out=await res.json();
     if(!res.ok)throw Error(out.error||'모델 저장 실패');
     modelSettings=out.models||modelSettings;
+    if(out.efforts)effortSettings=out.efforts;
     const picked=modelSettings[cliKey];
     notice(aiName+' 모델 → '+(picked||'CLI 기본값')+' (다음 호출부터 --model 적용)');
     menu.hidden=true;repaint();
   }catch(e){
     notice('모델 변경 실패 · '+e.message);
+    for(const x of menu.querySelectorAll('button,input'))x.disabled=false;
+  }
+}
+async function saveProviderEffort(cliKey,aiName,val,menu){
+  for(const x of menu.querySelectorAll('button,input'))x.disabled=true;
+  try{
+    const res=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':roleToken},body:JSON.stringify({efforts:{[cliKey]:val}})}),out=await res.json();
+    if(!res.ok)throw Error(out.error||'추론 강도 저장 실패');
+    if(out.efforts)effortSettings=out.efforts;
+    const picked=effortSettings[cliKey];
+    notice(aiName+' 추론 강도 → '+(picked||'기본값')+' (다음 호출부터 적용)');
+    menu.hidden=true;repaint();
+  }catch(e){
+    notice('추론 강도 변경 실패 · '+e.message);
     for(const x of menu.querySelectorAll('button,input'))x.disabled=false;
   }
 }
@@ -102,6 +123,17 @@ function openRoleMenu(label){
   applyBtn.type='submit';
   form.onsubmit=e=>{e.preventDefault();saveProviderModel(curCli,AI[curDom].name,inp.value.trim(),menu);};
   form.append(inp,applyBtn);menu.append(form);
+  menu.append(el('hr'),el('p',AI[curDom].name+' 추론 강도 · 사고량'));
+  const eGrid=el('div','','effort-grid'),ePresets=effortCatalog[curCli]||[{id:'',label:'기본값',hint:''},{id:'low',label:'Low'},{id:'medium',label:'Medium'},{id:'high',label:'High'}],activeEffort=(effortSettings&&effortSettings[curCli])||'';
+  for(const item of ePresets){
+    const eb=el('button',item.label,'effort-opt'),isCur=activeEffort===item.id;
+    eb.type='button';eb.setAttribute('role','menuitemradio');eb.setAttribute('aria-checked',String(isCur));
+    eb.style.setProperty('--c',AI[curDom].css);eb.classList.toggle('on',isCur);
+    eb.title=item.hint||item.label;
+    eb.onclick=()=>saveProviderEffort(curCli,AI[curDom].name,item.id,menu);
+    eGrid.append(eb);
+  }
+  menu.append(eGrid);
   const r=label.getBoundingClientRect(),c=$('stage-center').getBoundingClientRect();
   menu.hidden=false;
   menu.style.transform='translate('+Math.max(4,Math.min(r.left-c.left,c.width-menu.offsetWidth-4)).toFixed(0)+'px,'+(r.bottom-c.top+6+menu.offsetHeight>c.height?Math.max(4,r.top-c.top-menu.offsetHeight-6):r.bottom-c.top+6).toFixed(0)+'px)';   // no room below: open above the label
@@ -260,13 +292,32 @@ function paintScene(m){
     const label=document.querySelector('.slot-label[data-slot="'+i+'"]'),acting=w&&w.provider!==m.assign[role];
     label.style.setProperty('--c',(AI[p]||{}).css||'#fff');label.classList.toggle('busy',!!w);
     label.querySelector('.slot-name').textContent=((AI[p]||{name:p}).name)+(acting?' (대행)':'');
-    const mod=label.querySelector('.slot-model');if(mod){const chosen=(modelSettings&&modelSettings[CLI_OF[p]])||'';mod.textContent=chosen||'기본 모델';mod.classList.toggle('default',!chosen);}
+    const mod=label.querySelector('.slot-model');if(mod){const ck=CLI_OF[p],cm=(modelSettings&&modelSettings[ck])||'',ce=(effortSettings&&effortSettings[ck])||'';mod.textContent=(cm||'기본 모델')+(ce?' · '+ce:'');mod.classList.toggle('default',!cm&&!ce);}
     label._work=w?{text:SHORT[w.stage]||(role==='BUILDER'?SHORT.BUILDING:role==='REVIEWER'?SHORT.REVIEWING:'작업 중'),at:w.at,fixed:m.mode==='replay'?w.elapsed:null}:null;
     label.querySelector('.slot-status').textContent=label._work?label._work.text+' · '+clock(label._work.fixed!=null?label._work.fixed:(Date.now()-label._work.at)/1000):'대기';
     label.querySelector('.slot-stat').textContent=m.stats[p]||'';});
   if(m.phase==='BUILDING')edge[0]=1;if(m.phase==='REVIEWING')edge[1]=1;if(m.phase==='DECIDING')edge[2]=1;
   if(m.phase==='VERIFYING')act[1]=.5;
   Trinity.set({act,edge,colors,core:PHASE[m.phase].core,verify:m.phase==='VERIFYING'?1:0});
+}
+function paintQuotas(){
+  const box=$('quota-rows');if(!box||!quotaSnapshot||!quotaSnapshot.providers)return;
+  box.replaceChildren();
+  for(const [dom,ck] of [['ANTHROPIC','claude'],['GOOGLE','antigravity'],['OPENAI','openai']]){
+    const info=quotaSnapshot.providers[ck];if(!info)continue;
+    const row=el('div','','quota-row'+(info.state==='warning'?' warn':info.state==='exhausted'?' exhausted':''));
+    row.style.setProperty('--c',AI[dom].css);
+    const rl=info.rate_limits,pct=rl&&rl.primary_percent!=null?rl.primary_percent:null;
+    const rightTxt=pct!=null?('5h '+pct+'%'+(rl.secondary_percent!=null?' · 주간 '+rl.secondary_percent+'%':'')):(info.health==='QUOTA_EXCEEDED'?'한도 초과':('오늘 '+info.today_calls+'회 · '+tok(info.today_tokens)+' 토큰'));
+    const top=el('div','','quota-top');top.append(el('b',AI[dom].name+' · '+info.model+(info.effort&&info.effort!=='기본값'?' ('+info.effort+')':'')),el('span',rightTxt));
+    const bar=el('div','','quota-bar'),fill=el('i');
+    fill.style.width=(pct!=null?Math.min(100,Math.max(4,pct)):(info.state==='exhausted'?100:Math.min(100,info.today_calls*8)))+'%';
+    bar.append(fill);
+    const modelsText=(info.by_model||[]).slice(0,2).map(x=>x.model+' '+x.calls+'회/'+tok(x.tokens)).join(' · ');
+    row.append(top,bar);
+    if(modelsText)row.append(el('small',modelsText,'quota-sub'));
+    box.append(row);
+  }
 }
 let lastPhase=null;
 function stinger(m){
@@ -276,7 +327,7 @@ function stinger(m){
   const s=$('stinger');s.replaceChildren(el('small',m.w?(AI[m.w.provider]||{name:''}).name+' · '+(m.w.role||''):'DIRECTOR'),el('strong',PHASE[m.phase].word));
   s.style.setProperty('--c',actorColor(m));s.classList.remove('show');void s.offsetWidth;s.classList.add('show');
 }
-function paint(m){lastModel=m;stinger(m);paintNow(m);paintMission(m);paintWork(m);paintFeeds(m);paintScene(m);firstPaint=false;document.body.classList.add('ready');}
+function paint(m){lastModel=m;stinger(m);paintNow(m);paintMission(m);paintWork(m);paintQuotas();paintFeeds(m);paintScene(m);firstPaint=false;document.body.classList.add('ready');}
 const params=new URLSearchParams(location.search),attract=params.get('attract')==='1';let idleSince=null;
 function isLive(){const a=activity||{};return (a.working_now||[]).length>0||(a.missions||[]).some(m=>m.live);}
 function repaint(){
@@ -424,7 +475,8 @@ function start(){
     if(e.key==='b'||e.key==='B'||e.key==='ㅠ')setBroadcast(!document.body.classList.contains('broadcast'));
     if(e.key==='r'||e.key==='R'||e.key==='ㄱ')startReplay();});
   setInterval(()=>{const d=new Date();$('top-clock').textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':');if(!replay)tickTimer();},1000);
-  pollActivity();pollStatus();pollChat();pollRoles();setInterval(pollRoles,8000);
+  if($('btn-refresh-usage'))$('btn-refresh-usage').onclick=()=>refreshUsageLimits(true);
+  pollActivity();pollStatus();pollChat();pollRoles();setInterval(pollRoles,8000);setInterval(()=>refreshUsageLimits(false),15000);
   setInterval(pollActivity,3000);setInterval(pollStatus,6000);setInterval(pollChat,3000);
 }
 window.TrinityStage={model:()=>lastModel,replaying:()=>!!replay};

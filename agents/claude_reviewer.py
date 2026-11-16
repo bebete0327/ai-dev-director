@@ -29,6 +29,7 @@ class ClaudeReviewer:
         self,
         provider: str = "anthropic",
         model: str = "claude-code-cli",
+        effort: Optional[str] = None,
         executable: Optional[str] = None,
         timeout: int = 300,
         no_progress_timeout: int = 180,
@@ -37,6 +38,7 @@ class ClaudeReviewer:
     ):
         self.provider = provider or "anthropic"
         self.model = model or "claude-code-cli"
+        self.effort = effort or ""
         self.timeout = timeout
         self.no_progress_timeout = no_progress_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -156,12 +158,19 @@ class ClaudeReviewer:
             "```"
         )
 
-        from core.model_settings import normalize_model
+        from core.model_settings import effective_effort, normalize_model
         chosen = normalize_model(self.model)
-        invocation_cmd = f"claude --print --model {chosen}" if chosen else 'claude --print'
+        chosen_effort = effective_effort("claude", self.effort)
+        cmd = [self.executable, "--print"]
+        invocation_parts = ["claude", "--print"]
+        if chosen:
+            cmd.extend(["--model", chosen])
+            invocation_parts.extend(["--model", chosen])
+        if chosen_effort:
+            cmd.extend(["--effort", chosen_effort])
+            invocation_parts.extend(["--effort", chosen_effort])
+        invocation_cmd = " ".join(invocation_parts)
         self.logger.info(f"[Claude Reviewer] Invoking via ProcessTreeRunner: {self.executable} in {wt}")
-
-        cmd = [self.executable, "--print"] + (["--model", chosen] if chosen else [])
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=str(wt),

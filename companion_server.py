@@ -106,7 +106,7 @@ class CompanionHandler(d.DashboardHandler):
         if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0]:
             return self._send_json({'error': 'local requests only'}, 403)
         path = urlsplit(self.path).path
-        if path in STATIC_FILES or path in ('/ops/roles', '/ops/models', '/ops/activity', '/status', '/chat/messages'):
+        if path in STATIC_FILES or path in ('/ops/roles', '/ops/models', '/ops/usage-limits', '/ops/activity', '/status', '/chat/messages'):
             self._touch_client()
         try:                                    # a GET that carries a body: read it, or closing the socket with unread
             unread = int(self.headers.get('Content-Length') or 0)       # data resets the connection mid-response
@@ -116,11 +116,14 @@ class CompanionHandler(d.DashboardHandler):
             self.rfile.read(unread)
         if path == '/ops/roles':
             from core.role_settings import current
-            from core import model_settings
+            from core import model_settings, quota_tracker
             return self._send_json({
                 'roles': current(d.load_config()),
                 'models': model_settings.load(),
                 'model_catalog': model_settings.catalog(),
+                'efforts': model_settings.load_efforts(),
+                'effort_catalog': model_settings.effort_catalog(),
+                'usage_limits': quota_tracker.snapshot(),
                 'csrf': self.server.bridge_token,
             })
         if path == '/ops/models':
@@ -128,8 +131,13 @@ class CompanionHandler(d.DashboardHandler):
             return self._send_json({
                 'models': model_settings.load(),
                 'catalog': model_settings.catalog(),
+                'efforts': model_settings.load_efforts(),
+                'effort_catalog': model_settings.effort_catalog(),
                 'csrf': self.server.bridge_token,
             })
+        if path == '/ops/usage-limits':
+            from core import quota_tracker
+            return self._send_json(quota_tracker.snapshot())
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (CONSOLE_ROOT / name).read_bytes()
@@ -210,11 +218,17 @@ class CompanionHandler(d.DashboardHandler):
                 size = int(self.headers.get('Content-Length', '0'))
                 if not 0 < size <= 2048 or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                     raise ValueError('Invalid model request')
-                models = model_settings.save(json.loads(self.rfile.read(size)))
+                payload = json.loads(self.rfile.read(size))
+                if not isinstance(payload, dict) or not payload:
+                    raise ValueError('변경할 모델 또는 추론 강도를 지정해야 합니다.')
+                efforts_update = payload.pop('efforts', None)
+                models = model_settings.save(payload) if payload else model_settings.load()
+                efforts = model_settings.save_efforts(efforts_update) if isinstance(efforts_update, dict) and efforts_update else model_settings.load_efforts()
                 d.invalidate_status_cache()
                 return self._send_json({
                     'models': models,
-                    'message': '모델 설정 저장됨 · 다음 AI 호출부터 적용됩니다.',
+                    'efforts': efforts,
+                    'message': '모델/추론 강도 설정 저장됨 · 다음 AI 호출부터 적용됩니다.',
                 })
             except (ValueError, TypeError, KeyError) as exc:
                 return self._send_json({'error': str(exc)}, 400)

@@ -45,8 +45,8 @@ class TriadResearchRunner:
 
     def __init__(self, executables: Optional[Dict[str, str]] = None, timeout: float = 300.0,
                  no_output_timeout: float = 180.0, heartbeat_interval: float = 30.0,
-                 models: Optional[Dict[str, str]] = None):
-        from core.model_settings import domain_models
+                 models: Optional[Dict[str, str]] = None, efforts: Optional[Dict[str, str]] = None):
+        from core.model_settings import domain_efforts, domain_models
         configured = dict(executables or {})
         self.executables = {
             "OPENAI": configured.get("OPENAI") or resolve_cli("codex"),
@@ -54,6 +54,7 @@ class TriadResearchRunner:
             "GOOGLE": configured.get("GOOGLE") or resolve_cli("agy"),
         }
         self.models = domain_models(models)
+        self.efforts = domain_efforts(efforts)
         self.timeout = timeout
         self.no_output_timeout = no_output_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -61,38 +62,49 @@ class TriadResearchRunner:
 
     def _command(self, domain: str, executable: str, prompt: str):
         chosen = (self.models or {}).get(domain, "")
+        effort = (self.efforts or {}).get(domain, "")
         if domain == "OPENAI":
             # Codex official help: omitting PROMPT (or using '-') reads it from stdin.  This is required on
             # Windows where synthesis/cross-critique evidence can exceed CreateProcess' command-line limit.
+            cmd = [executable, "exec"]
+            desc = ["codex", "exec"]
             if chosen:
-                return (
-                    [executable, "exec", "--model", chosen, "--sandbox", "read-only", "-"],
-                    prompt,
-                    f"codex exec --model {chosen} --sandbox read-only - <stdin>",
-                )
-            return [executable, "exec", "--sandbox", "read-only", "-"], prompt, "codex exec --sandbox read-only - <stdin>"
+                cmd.extend(["--model", chosen])
+                desc.extend(["--model", chosen])
+            if effort:
+                cmd.extend(["-c", f"model_reasoning_effort={effort}"])
+                desc.extend(["-c", f"model_reasoning_effort={effort}"])
+            cmd.extend(["--sandbox", "read-only", "-"])
+            desc.extend(["--sandbox", "read-only", "-", "<stdin>"])
+            return cmd, prompt, " ".join(desc)
         if domain == "ANTHROPIC":
+            cmd = [executable, "--print", "--output-format", "json"]
+            desc = ["claude", "--print", "--output-format", "json"]
             if chosen:
-                return (
-                    [executable, "--print", "--output-format", "json", "--model", chosen],
-                    prompt,
-                    f"claude --print --output-format json --model {chosen}",
-                )
-            return [executable, "--print", "--output-format", "json"], prompt, "claude --print --output-format json"
+                cmd.extend(["--model", chosen])
+                desc.extend(["--model", chosen])
+            if effort:
+                cmd.extend(["--effort", effort])
+                desc.extend(["--effort", effort])
+            return cmd, prompt, " ".join(desc)
         if domain == "GOOGLE":
             # Official AGY stream-json mode reads NDJSON from stdin. This avoids Windows command-line limits
             # without file-read tools or permission bypasses, and exposes an explicit final result event.
             message = {"event": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}}
+            cmd = [executable]
+            desc = ["agy"]
             if chosen:
-                return (
-                    [executable, "--model", chosen, "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"],
-                    json.dumps(message, ensure_ascii=False) + "\n",
-                    f"agy --model {chosen} --input-format stream-json --output-format stream-json --sandbox <stdin>",
-                )
+                cmd.extend(["--model", chosen])
+                desc.extend(["--model", chosen])
+            if effort:
+                cmd.extend(["--effort", effort])
+                desc.extend(["--effort", effort])
+            cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"])
+            desc.extend(["--input-format", "stream-json", "--output-format", "stream-json", "--sandbox", "<stdin>"])
             return (
-                [executable, "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"],
+                cmd,
                 json.dumps(message, ensure_ascii=False) + "\n",
-                "agy --input-format stream-json --output-format stream-json --sandbox <stdin>",
+                " ".join(desc),
             )
         raise ValueError(f"unsupported TRIAD domain: {domain}")
 

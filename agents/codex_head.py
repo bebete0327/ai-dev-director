@@ -30,6 +30,7 @@ class CodexHead(BaseHead):
         self,
         executable: Optional[str] = None,
         model: str = "codex-cli",
+        effort: Optional[str] = None,
         timeout: int = 300,
         no_progress_timeout: int = 180,
         heartbeat_interval: int = 30,
@@ -41,6 +42,7 @@ class CodexHead(BaseHead):
             self.executable = str(Path(self.executable).resolve())
 
         self.model = model
+        self.effort = effort or ""
         self.timeout = timeout
         self.no_progress_timeout = no_progress_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -122,14 +124,20 @@ class CodexHead(BaseHead):
 
         # Official Codex CLI supports '-' / omitted PROMPT as stdin.  Never put potentially large ORDER,
         # review, or decision evidence on the Windows command line (WinError 206).
-        from core.model_settings import normalize_model
+        from core.model_settings import effective_effort, normalize_model
         chosen = normalize_model(self.model)
+        chosen_effort = effective_effort("openai", self.effort)
+        cmd = [self.executable, "exec"]
+        desc = ["codex", "exec"]
         if chosen:
-            cmd = [self.executable, "exec", "--model", chosen, "--sandbox", "read-only", "-"]
-            invocation_desc = f"codex exec --model {chosen} --sandbox read-only - <stdin>"
-        else:
-            cmd = [self.executable, "exec", "--sandbox", "read-only", "-"]
-            invocation_desc = "codex exec --sandbox read-only - <stdin>"
+            cmd.extend(["--model", chosen])
+            desc.extend(["--model", chosen])
+        if chosen_effort:
+            cmd.extend(["-c", f"model_reasoning_effort={chosen_effort}"])
+            desc.extend(["-c", f"model_reasoning_effort={chosen_effort}"])
+        cmd.extend(["--sandbox", "read-only", "-"])
+        desc.extend(["--sandbox", "read-only", "-", "<stdin>"])
+        invocation_desc = " ".join(desc)
         self.logger.info(f"[Codex Head] Invoking CLI via ProcessTreeRunner: {self.executable} (cwd={target_cwd})")
 
         sanitized_env = get_sanitized_env()

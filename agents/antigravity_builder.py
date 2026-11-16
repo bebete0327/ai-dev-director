@@ -37,6 +37,7 @@ class AntigravityBuilder:
         executable: Optional[str] = None,
         approved_commands: Optional[List[str]] = None,
         model: str = "antigravity-cli",
+        effort: Optional[str] = None,
         timeout: int = 600,
         no_progress_timeout: int = 180,
         heartbeat_interval: int = 30,
@@ -50,6 +51,7 @@ class AntigravityBuilder:
 
         self.approved_commands = approved_commands
         self.model = model
+        self.effort = effort or ""
         self.timeout = timeout
         self.no_progress_timeout = no_progress_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -599,11 +601,13 @@ except Exception as e:
             "directly into the allowed paths."
         )
 
-        from core.model_settings import normalize_model
+        from core.model_settings import effective_effort, normalize_model
         chosen_model = normalize_model(self.model)
+        chosen_effort = effective_effort("antigravity", getattr(self, "effort", ""))
         model_prefix = f"--model {chosen_model} " if chosen_model else ""
+        effort_prefix = f"--effort {chosen_effort} " if chosen_effort else ""
         invocation_cmd = (
-            f"agy {model_prefix}--input-format stream-json --output-format stream-json "
+            f"agy {model_prefix}{effort_prefix}--input-format stream-json --output-format stream-json "
             "--mode accept-edits --sandbox <stdin>"
         )
         self.logger.info(f"[Antigravity Builder] Subprocess execution: {self.executable} in {wt}")
@@ -616,6 +620,8 @@ except Exception as e:
             cmd = [self.executable]
             if chosen_model:
                 cmd.extend(["--model", chosen_model])
+            if chosen_effort:
+                cmd.extend(["--effort", chosen_effort])
             cmd.extend([
                 "--input-format", "stream-json",
                 "--output-format", "stream-json",

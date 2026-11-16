@@ -277,3 +277,71 @@ def test_windows_motw_zone_identifier_self_unblock(tmp_path, monkeypatch):
     removed = launcher.unblock_windows_files(tmp_path)
     assert removed >= 1
     assert f"{exe_file}:Zone.Identifier" in deleted_streams
+
+
+def test_reasoning_effort_settings_and_cli_flags(tmp_path, monkeypatch):
+    from core import quota_tracker
+    monkeypatch.setattr(model_settings, "PATH", tmp_path / "models.json")
+
+    model_settings.save({"claude": "opus", "openai": "gpt-6-astra"})
+    eff = model_settings.save_efforts({"claude": "max", "openai": "xhigh", "antigravity": "high"})
+    assert eff == {"claude": "max", "antigravity": "high", "openai": "xhigh"}
+    # Saving models later must preserve saved efforts
+    model_settings.save({"antigravity": "Gemini 4 Argon"})
+    assert model_settings.load_efforts() == eff
+
+    with pytest.raises(ValueError):
+        model_settings.save_efforts({"claude": "minimal"})
+
+    r = TriadResearchRunner(
+        executables={"OPENAI": "/bin/codex", "ANTHROPIC": "/bin/claude", "GOOGLE": "/bin/agy"},
+        models={"OPENAI": "gpt-6-astra", "ANTHROPIC": "opus", "GOOGLE": "Gemini 4 Argon"},
+        efforts={"OPENAI": "xhigh", "ANTHROPIC": "max", "GOOGLE": "high"},
+    )
+    assert r._command("OPENAI", "/bin/codex", "hi")[0] == [
+        "/bin/codex", "exec", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=xhigh", "--sandbox", "read-only", "-"
+    ]
+    assert r._command("ANTHROPIC", "/bin/claude", "hi")[0] == [
+        "/bin/claude", "--print", "--output-format", "json", "--model", "opus", "--effort", "max"
+    ]
+    assert r._command("GOOGLE", "/bin/agy", "hi")[0] == [
+        "/bin/agy", "--model", "Gemini 4 Argon", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
+    ]
+
+    # Codex & Claude local quota snapshot parsing
+    codex_dir = tmp_path / "codex_sessions"
+    codex_dir.mkdir()
+    (codex_dir / "rollout-1.jsonl").write_text(
+        json.dumps({"payload": {"info": {"rate_limits": {"primary": {"used_percent": 32.5, "resets_at": 1700000000}, "secondary": {"used_percent": 11.0}}}}}) + "\n",
+        encoding="utf-8",
+    )
+    claude_dir = tmp_path / "claude_projects" / "proj"
+    claude_dir.mkdir(parents=True)
+    (claude_dir / "sess.jsonl").write_text(
+        json.dumps({"uuid": "u1", "message": {"id": "m1", "model": "claude-opus-5-5", "usage": {"input_tokens": 1200, "output_tokens": 300}}}) + "\n",
+        encoding="utf-8",
+    )
+    snap = quota_tracker.snapshot(codex_dir=codex_dir, claude_dir=tmp_path / "claude_projects")
+    assert snap["providers"]["openai"]["rate_limits"]["primary_percent"] == 32.5
+    assert snap["providers"]["openai"]["rate_limits"]["secondary_percent"] == 11.0
+    assert any(m["model"] == "claude-opus-5-5" and m["tokens"] == 1500 for m in snap["providers"]["claude"]["by_model"])
+
+
+def test_http_usage_limits_and_effort_post(http_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(model_settings, "PATH", tmp_path / "models.json")
+    code, body = request(http_server, "GET", "/ops/usage-limits")
+    assert code == 200
+    snap = json.loads(body)
+    assert "providers" in snap and {"claude", "openai", "antigravity"} <= set(snap["providers"])
+
+    code_post, post_body = request(
+        http_server,
+        "POST",
+        "/ops/models",
+        json.dumps({"efforts": {"claude": "high", "openai": "xhigh"}}).encode(),
+        {"Content-Type": "application/json", "X-Solomon-Bridge": http_server.bridge_token},
+    )
+    assert code_post == 200
+    out = json.loads(post_body)
+    assert out["efforts"]["claude"] == "high"
+    assert out["efforts"]["openai"] == "xhigh"

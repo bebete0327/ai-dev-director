@@ -30,6 +30,7 @@ class ClaudeHead(BaseHead):
         self,
         executable: Optional[str] = None,
         model: str = "claude-code-cli",
+        effort: Optional[str] = None,
         timeout: int = 300,
         no_progress_timeout: int = 180,
         heartbeat_interval: int = 30,
@@ -41,6 +42,7 @@ class ClaudeHead(BaseHead):
             self.executable = str(Path(self.executable).resolve())
 
         self.model = model
+        self.effort = effort or ""
         self.timeout = timeout
         self.no_progress_timeout = no_progress_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -104,13 +106,17 @@ class ClaudeHead(BaseHead):
         if not self.executable or not Path(self.executable).exists():
             raise RuntimeError(f"CONFIG_ERROR: Official Claude Code CLI not found at: {self.executable}")
 
-        from core.model_settings import normalize_model
+        from core.model_settings import effective_effort, normalize_model
         chosen = normalize_model(self.model)
+        chosen_effort = effective_effort("claude", self.effort)
         cmd = [self.executable, "--print", "--output-format", "json"]
         invocation_desc = "claude --print --output-format json"
         if chosen:
             cmd.extend(["--model", chosen])
             invocation_desc += f" --model {chosen}"
+        if chosen_effort:
+            cmd.extend(["--effort", chosen_effort])
+            invocation_desc += f" --effort {chosen_effort}"
         self.logger.info(f"[Claude Head] Invoking CLI via ProcessTreeRunner: {self.executable} (cwd={cwd})")
 
         sanitized_env = get_sanitized_env()

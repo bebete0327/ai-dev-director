@@ -18,7 +18,9 @@ class GoogleHead(ClaudeHead):
         from core import usage
         usage.set_context(role=getattr(self, "usage_role", "HEAD"))
         runner = TriadResearchRunner(executables={'GOOGLE': self.executable}, timeout=self.timeout,
-                                    no_output_timeout=self.no_progress_timeout, models={'GOOGLE': self.model})
+                                    no_output_timeout=self.no_progress_timeout,
+                                    models={'GOOGLE': self.model},
+                                    efforts={'GOOGLE': getattr(self, 'effort', '')})
         with tempfile.TemporaryDirectory(prefix='director-google-role-') as tmp:
             prepare_project(tmp)
             result = runner.invoke('GOOGLE', 'Do not use tools. Use supplied evidence only.\n' + prompt, tmp, 'HEAD')

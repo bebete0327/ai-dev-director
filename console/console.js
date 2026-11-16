@@ -52,9 +52,9 @@ frame.addEventListener('load',setup);if(frame.contentDocument?.readyState==='com
 async function setupRoles(){
  const domains={OPENAI:'openai',GOOGLE:'antigravity',ANTHROPIC:'claude'},aiLabel={OPENAI:'Codex',GOOGLE:'Antigravity',ANTHROPIC:'Claude'};
  const order=['head','builder','reviewer'],names={head:'HEAD · 작업 지휘',builder:'BUILDER · 코드 작성',reviewer:'REVIEWER · 검수'};
- let roles,models={},catalog={},csrf,saving=false;
+ let roles,models={},catalog={},efforts={},effortCatalog={},csrf,saving=false;
  const notice=el('p','역할 및 모델 설정 불러오는 중…','role-notice');notice.setAttribute('aria-live','polite');doc.getElementById('corestrip').after(notice);
- const buttons={},selects={},customRows={};
+ const buttons={},selects={},effortSelects={},customRows={};
  async function saveModel(provider,label,value){
   saving=true;paint();
   try{const response=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify({[provider]:value})});
@@ -62,32 +62,50 @@ async function setupRoles(){
    notice.textContent=label+' 모델 저장됨: '+(models[provider]||'CLI 기본값')+' · 다음 호출부터 --model 적용';}
   catch(error){notice.textContent='모델 변경 실패 · '+error.message;}finally{saving=false;paint();}
  }
+ async function saveEffort(provider,label,value){
+  saving=true;paint();
+  try{const response=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify({efforts:{[provider]:value}})});
+   const result=await response.json();if(!response.ok)throw Error(result.error||'추론 강도 저장 실패');efforts=result.efforts||efforts;
+   notice.textContent=label+' 추론 강도 저장됨: '+(efforts[provider]||'기본값')+' · 다음 호출부터 적용';}
+  catch(error){notice.textContent='추론 강도 변경 실패 · '+error.message;}finally{saving=false;paint();}
+ }
  function paint(){
   for(const [domain,provider] of Object.entries(domains)){
    if(roles){const role=order.find(r=>roles[r]===provider);buttons[domain].textContent='다음: '+names[role]+' ↻';buttons[domain].disabled=saving;buttons[domain].setAttribute('aria-label',domain+' 역할 변경. 현재 예약 '+names[role]);}
-   const sel=selects[domain],crow=customRows[domain];if(!sel)continue;
-   const presets=catalog[provider]||[{id:'',label:'CLI 기본값'}],cur=models[provider]||'',known=presets.some(p=>p.id===cur);
-   sel.replaceChildren();
-   for(const p of presets){const o=el('option','모델: '+p.label+(p.id?' ('+p.id+')':''));o.value=p.id;sel.append(o);}
-   const customOpt=el('option',!known&&cur?'모델(직접 지정): '+cur:'모델 ID 직접 입력…');customOpt.value='__custom__';sel.append(customOpt);
-   sel.value=known?cur:'__custom__';sel.disabled=saving||!csrf;
-   if(crow){crow.hidden=known;if(!known&&cur)crow.firstChild.value=cur;}
+   const sel=selects[domain],crow=customRows[domain],esel=effortSelects[domain];
+   if(sel){
+    const presets=catalog[provider]||[{id:'',label:'CLI 기본값'}],cur=models[provider]||'',known=presets.some(p=>p.id===cur);
+    sel.replaceChildren();
+    for(const p of presets){const o=el('option','모델: '+p.label+(p.id?' ('+p.id+')':''));o.value=p.id;sel.append(o);}
+    const customOpt=el('option',!known&&cur?'모델(직접 지정): '+cur:'모델 ID 직접 입력…');customOpt.value='__custom__';sel.append(customOpt);
+    sel.value=known?cur:'__custom__';sel.disabled=saving||!csrf;
+    if(crow){crow.hidden=known;if(!known&&cur)crow.firstChild.value=cur;}
+   }
+   if(esel){
+    const ep=effortCatalog[provider]||[{id:'',label:'기본값'}],ecur=efforts[provider]||'';
+    esel.replaceChildren();
+    for(const item of ep){const o=el('option','추론 강도: '+item.label);o.value=item.id;esel.append(o);}
+    esel.value=ep.some(item=>item.id===ecur)?ecur:'';esel.disabled=saving||!csrf;
+   }
   }
  }
  for(const [domain,provider] of Object.entries(domains)){
   const node=doc.getElementById('node-'+domain);
   const button=el('button','역할 연결 중…','role-cycle');button.type='button';button.disabled=true;buttons[domain]=button;
-  const wrap=el('div','','model-picker-wrap'),sel=el('select','','model-select');sel.disabled=true;sel.setAttribute('aria-label',aiLabel[domain]+' 모델 선택');selects[domain]=sel;
+  const wrap=el('div','','model-picker-wrap'),sel=el('select','','model-select'),esel=el('select','','model-select');
+  sel.disabled=true;sel.setAttribute('aria-label',aiLabel[domain]+' 모델 선택');selects[domain]=sel;
+  esel.disabled=true;esel.setAttribute('aria-label',aiLabel[domain]+' 추론 강도 선택');effortSelects[domain]=esel;
   const crow=el('div','','model-custom-row'),cinp=el('input',''),cbtn=el('button','적용');cinp.type='text';cinp.placeholder='모델 ID 입력 (비우면 기본값)';cbtn.type='button';crow.hidden=true;crow.append(cinp,cbtn);customRows[domain]=crow;
   sel.onchange=()=>{if(sel.value==='__custom__'){crow.hidden=false;cinp.focus();return;}crow.hidden=true;saveModel(provider,aiLabel[domain],sel.value);};
+  esel.onchange=()=>saveEffort(provider,aiLabel[domain],esel.value);
   cbtn.onclick=()=>saveModel(provider,aiLabel[domain],cinp.value.trim());
   cinp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveModel(provider,aiLabel[domain],cinp.value.trim());}};
-  wrap.append(sel,crow);node?.append(button,wrap);
+  wrap.append(sel,crow,esel);node?.append(button,wrap);
   button.onclick=async()=>{if(saving||!roles)return;saving=true;paint();const next={...roles},current=order.find(r=>roles[r]===provider),target=order[(order.indexOf(current)+1)%3];next[current]=roles[target];next[target]=provider;
    try{const response=await fetch('/ops/roles',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify(next)});const result=await response.json();if(!response.ok)throw Error(result.error||'저장 실패');roles=result.roles;notice.textContent=result.message;}
    catch(error){notice.textContent='역할 변경 실패 · '+error.message;}finally{saving=false;paint();}};
  }
- try{const response=await fetch('/ops/roles',{cache:'no-store'});if(!response.ok)throw Error('설정 조회 실패');const result=await response.json();roles=result.roles;models=result.models||{};catalog=result.model_catalog||{};csrf=result.csrf;paint();notice.textContent='각 AI 카드에서 역할 순환 및 CLI 모델(--model)을 바로 고를 수 있습니다. 다음 대화/작업부터 적용됩니다.';}catch(error){notice.textContent=error.message;}
+ try{const response=await fetch('/ops/roles',{cache:'no-store'});if(!response.ok)throw Error('설정 조회 실패');const result=await response.json();roles=result.roles;models=result.models||{};catalog=result.model_catalog||{};efforts=result.efforts||{};effortCatalog=result.effort_catalog||{};csrf=result.csrf;paint();notice.textContent='각 AI 카드에서 역할 순환, CLI 모델(--model), 추론 강도를 바로 고를 수 있습니다. 다음 대화/작업부터 적용됩니다.';}catch(error){notice.textContent=error.message;}
 }
 
 // ---------------------------------------------------------------- AI work visibility (missions, who works now, workload)
