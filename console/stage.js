@@ -44,13 +44,40 @@ async function getJSON(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok
 
 // ------------------------------------------------------------------ model
 const CLI={claude:'ANTHROPIC',antigravity:'GOOGLE',openai:'OPENAI'},CLI_OF={ANTHROPIC:'claude',GOOGLE:'antigravity',OPENAI:'openai'};
-let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSettings={},effortCatalog={},quotaSnapshot=null,mobileUrls=[];
-async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;if(r.mobile_urls)mobileUrls=r.mobile_urls;repaint();}catch(e){/* keep the last known roles */}}
+let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSettings={},effortCatalog={},quotaSnapshot=null,mobileUrls=[],tunnelInfo={url:null,status:'stopped'};
+async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;if(r.mobile_urls)mobileUrls=r.mobile_urls;if(r.tunnel)tunnelInfo=r.tunnel;repaint();}catch(e){/* keep the last known roles */}}
 async function refreshUsageLimits(manual){
   const btn=$('btn-refresh-usage');if(manual&&btn){btn.disabled=true;btn.textContent='갱신 중…';}
-  try{quotaSnapshot=await getJSON('/ops/usage-limits'+(manual?'?force=1':''));paintQuotas();}
+  try{
+    const r=await getJSON('/ops/usage-limits'+(manual?'?force=1':''));
+    quotaSnapshot=r;
+    if(r.mobile_urls)mobileUrls=r.mobile_urls;
+    if(r.tunnel)tunnelInfo=r.tunnel;
+    paintQuotas();
+  }
   catch(e){if(manual)notice('사용량 조회 실패 · '+e.message);}
   finally{if(manual&&btn){btn.disabled=false;btn.textContent='↻ 새로고침';}}
+}
+async function toggleMobileTunnel(btn){
+  if(btn){btn.disabled=true;btn.textContent=tunnelInfo&&tunnelInfo.url?'종료 중…':'생성 중…(5초)';}
+  try{
+    const out=await getJSON('/ops/usage-limits?tunnel=toggle');
+    quotaSnapshot=out;
+    if(out.tunnel)tunnelInfo=out.tunnel;
+    if(out.mobile_urls)mobileUrls=out.mobile_urls;
+    paintQuotas();
+    if(tunnelInfo&&tunnelInfo.url){
+      try{navigator.clipboard.writeText(tunnelInfo.url);}catch(e){}
+      notice('LTE·원격 모바일 접속 주소 생성 및 복사됨 · '+tunnelInfo.url);
+    }else if(tunnelInfo&&tunnelInfo.error){
+      notice('원격 주소 생성 실패 · '+tunnelInfo.error);
+    }else{
+      notice('원격 모바일 접속 터널을 종료했습니다.');
+    }
+  }catch(e){
+    notice('원격 주소 전환 실패 · '+e.message);
+    if(btn){btn.disabled=false;btn.textContent='🌐 연결 안될 때 (LTE 주소)';}
+  }
 }
 async function refreshModelCatalog(label,btn){
   if(btn){btn.disabled=true;btn.textContent='갱신 중…';}
@@ -61,6 +88,7 @@ async function refreshModelCatalog(label,btn){
     if(r.efforts)effortSettings=r.efforts;
     if(r.effort_catalog)effortCatalog=r.effort_catalog;
     if(r.mobile_urls)mobileUrls=r.mobile_urls;
+    if(r.tunnel)tunnelInfo=r.tunnel;
     const menu=$('role-menu');
     menu.hidden=true;
     openRoleMenu(label);
@@ -366,13 +394,20 @@ function paintQuotas(){
     if(modelsText)row.append(el('small',modelsText,'quota-sub'));
     box.append(row);
   }
-  if(Array.isArray(mobileUrls)&&mobileUrls.length){
-    const mBar=el('div','','mobile-access-bar');
-    mBar.append(el('span','📱 모바일 접속 (같은 Wi-Fi/Tailscale)','mobile-access-label'),el('code',mobileUrls[0],'mobile-access-url'));
-    mBar.title='클릭하면 모바일 접속 주소를 복사합니다 ('+mobileUrls.join(', ')+')';
-    mBar.onclick=()=>{try{navigator.clipboard.writeText(mobileUrls[0]);notice('모바일 접속 주소 복사됨 · '+mobileUrls[0]);}catch(e){notice('모바일 접속 주소: '+mobileUrls[0]);}};
-    box.append(mBar);
-  }
+  const activeTunnelUrl=(tunnelInfo&&tunnelInfo.url)||null;
+  const primaryMobileUrl=activeTunnelUrl||(Array.isArray(mobileUrls)&&mobileUrls.length?mobileUrls[0]:location.origin);
+  const mBar=el('div','','mobile-access-bar'+(activeTunnelUrl?' tunnel-on':''));
+  const mTop=el('div','','mobile-access-top');
+  const mLabel=el('span',activeTunnelUrl?'🌐 모바일 원격 접속 (LTE·외부 연결됨)':'📱 모바일 접속 (뒤에 :8081 필수)','mobile-access-label');
+  const tBtn=el('button',activeTunnelUrl?'원격 끄기':'🌐 연결 안될 때 (LTE 주소)','mobile-tunnel-btn');
+  tBtn.type='button';
+  tBtn.onclick=e=>{e.stopPropagation();toggleMobileTunnel(tBtn);};
+  mTop.append(mLabel,tBtn);
+  const mCode=el('code',primaryMobileUrl,'mobile-access-url');
+  mCode.title='클릭하면 모바일 접속 주소를 복사합니다';
+  mCode.onclick=()=>{try{navigator.clipboard.writeText(primaryMobileUrl);notice('모바일 접속 주소 복사됨 · '+primaryMobileUrl);}catch(e){notice('모바일 접속 주소: '+primaryMobileUrl);}};
+  mBar.append(mTop,mCode);
+  box.append(mBar);
 }
 let lastPhase=null;
 function stinger(m){

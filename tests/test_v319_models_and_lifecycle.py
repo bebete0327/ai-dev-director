@@ -522,3 +522,46 @@ def test_live_model_discovery_and_custom_model_persistence(http_server, tmp_path
     assert code == 200
     payload = json.loads(body)
     assert "catalog" in payload and "mobile_urls" in payload
+
+
+def test_agy_protobuf_offset_and_pool_dedup_and_tunnel_state(http_server):
+    import base64
+    from core import quota_tracker
+
+    # 1. Protobuf-prefixed inner base64 (1..3 ASCII tag/length bytes shifting 4-byte alignment)
+    raw_token = "ya29.a0AfH6SMB_real_antigravity_oauth_token_1234567890"
+    inner_b64 = base64.b64encode(f"\x0a\x37{raw_token}".encode("utf-8")).decode("ascii")
+    # Prepend 2 ASCII protobuf tag/length characters ('\x12Z' -> 'Z' is base64 char, shifting alignment by 1)
+    outer_proto = b"\x0a\x0eoauthTokenInfo\x12Z" + inner_b64.encode("ascii")
+    outer_b64 = base64.b64encode(outer_proto).decode("ascii")
+    assert quota_tracker._search_ya29_in_text(outer_b64) == raw_token
+
+    # 2. GetUserStatus fallback maps Orchestrator (Argon) to Gemini and Claude Fable 5.2 to Claude/GPT (no duplicate '모델 · 한도')
+    status_payload = {
+        "userStatus": {
+            "cascadeModelConfigData": {
+                "clientModelConfigs": [
+                    {"label": "Gemini 4 Carbon", "quotaInfo": {"remainingFraction": 0.147, "resetTime": "2026-11-18T16:30:00Z"}},
+                    {"label": "Orchestrator (Argon)", "quotaInfo": {"remainingFraction": 0.147, "resetTime": "2026-11-18T16:30:00Z"}},
+                    {"label": "Claude Fable 5.2", "quotaInfo": {"remainingFraction": 1.0, "resetTime": "2026-11-18T20:00:00Z"}},
+                ]
+            }
+        }
+    }
+    parsed = quota_tracker._parse_antigravity_quota_payload(status_payload, now_ts=1795015000.0)
+    assert parsed is not None
+    labels = [w["label"] for w in parsed["windows"]]
+    assert labels == ["Gemini · 한도", "Claude/GPT · 한도"]
+
+    # 3. /ops/state and /ops/usage-limits include mobile_urls and tunnel metadata
+    import dashboard_server as d
+    d._ensure_schema()
+    code, body = request(http_server, "GET", "/ops/state")
+    assert code == 200
+    state = json.loads(body)
+    assert "mobile_urls" in state and "tunnel" in state
+    code2, body2 = request(http_server, "GET", "/ops/usage-limits")
+    assert code2 == 200
+    ul = json.loads(body2)
+    assert "mobile_urls" in ul and "tunnel" in ul
+

@@ -20,6 +20,130 @@ STATIC_FILES = {'/': 'index.html', '/console.js': 'console.js', '/console.css': 
 
 
 _PICK_LOCK = threading.Lock()
+_TUNNEL_LOCK = threading.Lock()
+_TUNNEL_STATE = {"proc": None, "url": None, "status": "stopped", "error": None}
+_TUNNEL_URL_RE = re.compile(r"(https://[a-zA-Z0-9\-\.]+\.(?:lhr\.life|localhost\.run))")
+
+
+def get_tunnel_info() -> dict:
+    with _TUNNEL_LOCK:
+        proc = _TUNNEL_STATE["proc"]
+        if proc is not None and proc.poll() is not None:
+            _TUNNEL_STATE["proc"] = None
+            _TUNNEL_STATE["url"] = None
+            _TUNNEL_STATE["status"] = "stopped"
+        return {
+            "url": _TUNNEL_STATE["url"],
+            "status": _TUNNEL_STATE["status"],
+            "error": _TUNNEL_STATE["error"],
+        }
+
+
+def stop_mobile_tunnel() -> dict:
+    with _TUNNEL_LOCK:
+        proc = _TUNNEL_STATE.get("proc")
+        _TUNNEL_STATE["proc"] = None
+        _TUNNEL_STATE["url"] = None
+        _TUNNEL_STATE["status"] = "stopped"
+        _TUNNEL_STATE["error"] = None
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    return get_tunnel_info()
+
+
+def start_mobile_tunnel(port: int = 8081, wait_sec: float = 6.5) -> dict:
+    """Start a zero-install outbound HTTPS tunnel via Windows/Linux built-in ssh -> nokey@localhost.run
+    so smartphones on LTE/5G or isolated Wi-Fi subnets can connect without firewall or port forwarding."""
+    import os
+    import shutil
+    import time
+
+    cur = get_tunnel_info()
+    if cur["status"] == "running" and cur["url"]:
+        return cur
+
+    stop_mobile_tunnel()
+    ssh_bin = shutil.which("ssh")
+    if not ssh_bin and os.name == "nt":
+        win_ssh = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh.exe"
+        if win_ssh.is_file():
+            ssh_bin = str(win_ssh)
+    if not ssh_bin:
+        with _TUNNEL_LOCK:
+            _TUNNEL_STATE["status"] = "error"
+            _TUNNEL_STATE["error"] = "OpenSSH(ssh)가 설치되어 있지 않습니다."
+        return get_tunnel_info()
+
+    cmd = [
+        ssh_bin,
+        "-T",
+        "-n",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", f"UserKnownHostsFile={os.devnull}",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ConnectTimeout=10",
+        "-R", f"80:127.0.0.1:{port}",
+        "nokey@localhost.run",
+    ]
+    kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)} if os.name == "nt" else {}
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **kwargs,
+        )
+    except OSError as exc:
+        with _TUNNEL_LOCK:
+            _TUNNEL_STATE["status"] = "error"
+            _TUNNEL_STATE["error"] = str(exc)
+        return get_tunnel_info()
+
+    with _TUNNEL_LOCK:
+        _TUNNEL_STATE["proc"] = proc
+        _TUNNEL_STATE["url"] = None
+        _TUNNEL_STATE["status"] = "starting"
+        _TUNNEL_STATE["error"] = None
+
+    def _reader():
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                if not line:
+                    break
+                m = _TUNNEL_URL_RE.search(line)
+                if m:
+                    url = m.group(1).rstrip("/.,;")
+                    if "admin.localhost.run" in url:
+                        continue
+                    with _TUNNEL_LOCK:
+                        if _TUNNEL_STATE["proc"] is proc:
+                            _TUNNEL_STATE["url"] = url
+                            _TUNNEL_STATE["status"] = "running"
+                            _TUNNEL_STATE["error"] = None
+        except Exception:
+            pass
+        finally:
+            with _TUNNEL_LOCK:
+                if _TUNNEL_STATE["proc"] is proc and not _TUNNEL_STATE["url"]:
+                    _TUNNEL_STATE["status"] = "error"
+                    _TUNNEL_STATE["error"] = "원격 터널 연결에 실패했습니다."
+
+    threading.Thread(target=_reader, name="director-ssh-tunnel", daemon=True).start()
+
+    deadline = time.monotonic() + wait_sec
+    while time.monotonic() < deadline:
+        info = get_tunnel_info()
+        if info["url"] or info["status"] in ("error", "stopped"):
+            return info
+        time.sleep(0.15)
+    return get_tunnel_info()
 
 
 def detect_mobile_urls(port: int = 8081) -> list:
@@ -41,7 +165,11 @@ def detect_mobile_urls(port: int = 8081) -> list:
                 ips.append(ip)
     except Exception:
         pass
-    return [f"http://{ip}:{port}" for ip in ips[:3]]
+    urls = [f"http://{ip}:{port}" for ip in ips[:3]]
+    t_info = get_tunnel_info()
+    if t_info.get("url"):
+        urls.insert(0, t_info["url"])
+    return urls
 
 
 def pick_folder(initial: str = "", timeout: int = 300) -> dict:
@@ -147,6 +275,7 @@ class CompanionHandler(d.DashboardHandler):
                 'effort_catalog': model_settings.effort_catalog(),
                 'usage_limits': quota_tracker.snapshot(),
                 'mobile_urls': detect_mobile_urls(self.server.server_address[1]),
+                'tunnel': get_tunnel_info(),
                 'csrf': self.server.bridge_token,
             })
         if path == '/ops/models':
@@ -158,12 +287,25 @@ class CompanionHandler(d.DashboardHandler):
                 'efforts': model_settings.load_efforts(),
                 'effort_catalog': model_settings.effort_catalog(),
                 'mobile_urls': detect_mobile_urls(self.server.server_address[1]),
+                'tunnel': get_tunnel_info(),
                 'csrf': self.server.bridge_token,
             })
         if path == '/ops/usage-limits':
             from core import quota_tracker
-            force = parse_qs(urlsplit(self.path).query).get('force', [''])[0] == '1'
-            return self._send_json(quota_tracker.snapshot(force=force))
+            qs = parse_qs(urlsplit(self.path).query)
+            force = qs.get('force', [''])[0] == '1'
+            t_act = qs.get('tunnel', [''])[0].lower()
+            port = self.server.server_address[1]
+            if t_act in ('toggle', 'start', 'stop'):
+                cur = get_tunnel_info()
+                if t_act == 'stop' or (t_act == 'toggle' and cur.get('url')):
+                    stop_mobile_tunnel()
+                else:
+                    start_mobile_tunnel(port=port)
+            snap = dict(quota_tracker.snapshot(force=force))
+            snap['mobile_urls'] = detect_mobile_urls(port)
+            snap['tunnel'] = get_tunnel_info()
+            return self._send_json(snap)
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (CONSOLE_ROOT / name).read_bytes()
@@ -179,9 +321,12 @@ class CompanionHandler(d.DashboardHandler):
         elif path == '/ops/state':
             report = ROOT / 'data' / 'cli_diagnostics.json'
             return self._send_json({'csrf': self.server.bridge_token,
-                'orders': self.server.bridge.list(), 'allowed_projects': sorted(self.server.bridge.allowed),
+                'orders': self.server.bridge.list(), 'allowed_projects': sorted(getattr(self.server.bridge, 'allowed', ())),
                 'diagnostics': json.loads(report.read_text(encoding='utf-8')) if report.exists() else None,
-                'status': d.cached_status_payload(), 'solomon_url': 'http://127.0.0.1:8710'})
+                'status': d.cached_status_payload(), 'solomon_url': 'http://127.0.0.1:8710',
+                'mobile_urls': detect_mobile_urls(self.server.server_address[1]),
+                'tunnel': get_tunnel_info(),
+                'remote_access': d.is_remote_access_enabled()})
         elif path.startswith('/bridge/'):
             if not self.authorized():
                 return self._send_json({'error': 'bridge authentication required'}, 403)
@@ -214,6 +359,25 @@ class CompanionHandler(d.DashboardHandler):
         return secrets.compare_digest(self.headers.get('X-Solomon-Bridge', ''), self.server.bridge_token)
 
     def do_POST(self):
+        if self.path == '/ops/tunnel':
+            if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
+                return self._send_json({'error': 'local authenticated request required'}, 403)
+            try:
+                size = int(self.headers.get('Content-Length') or 0)
+                payload = json.loads(self.rfile.read(size)) if 0 < size <= 1024 else {}
+            except Exception:
+                payload = {}
+            action = str((payload or {}).get('action') or 'toggle').lower()
+            port = self.server.server_address[1]
+            cur = get_tunnel_info()
+            if action == 'stop' or (action == 'toggle' and cur.get('url')):
+                info = stop_mobile_tunnel()
+            else:
+                info = start_mobile_tunnel(port=port)
+            return self._send_json({
+                'tunnel': info,
+                'mobile_urls': detect_mobile_urls(port),
+            })
         if self.path == '/ops/roles':
             if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
                 return self._send_json({'error': 'local authenticated request required'}, 403)
@@ -286,6 +450,7 @@ class CompanionHandler(d.DashboardHandler):
                 self.rfile.read(unread)
             self.server.stopping = True
             logging.getLogger('director.companion').warning('shutdown requested from %s', self.headers.get('Referer') or 'local client')
+            stop_mobile_tunnel()
             try:
                 from core.process_runner import ProcessTreeRunner
                 ProcessTreeRunner.kill_active()
@@ -391,14 +556,15 @@ def create_server(bind_host: str = ""):
 
 def run():
     import os
-    if '--cloud' in sys.argv or '--remote' in sys.argv:
-        os.environ['DIRECTOR_REMOTE_ACCESS'] = '1'
+    if '--cloud' in sys.argv or '--remote' in sys.argv or os.environ.get('DIRECTOR_TESTING') != '1':
+        os.environ.setdefault('DIRECTOR_REMOTE_ACCESS', '1')
     server = create_server()
     host, port = server.server_address[:2]
     print(f'AI DEV × SOLOMON http://{host}:{port}', flush=True)
     try:
         server.serve_forever()
     finally:
+        stop_mobile_tunnel()
         server.server_close()
         print('AI DEV companion stopped (system stop)', flush=True)
 
