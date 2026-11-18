@@ -485,3 +485,40 @@ def test_cloud_remote_access_and_auth_sync_bundle(monkeypatch):
     assert d.is_request_origin_allowed(
         {"Host": "100.64.1.25:8081", "Origin": "http://evil.example.com"}, 8081
     )[0] is False
+
+
+def test_live_model_discovery_and_custom_model_persistence(http_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(model_settings, "PATH", tmp_path / "models.json")
+
+    # 1. Built-in presets include Claude Fable 5.2 and GPT-6.2 Astra
+    base_cat = model_settings.catalog()
+    claude_ids = [m["id"] for m in base_cat["claude"]]
+    openai_ids = [m["id"] for m in base_cat["openai"]]
+    assert "claude-fable-5-2" in claude_ids
+    assert "gpt-6.2-astra" in openai_ids
+
+    # 2. Live discovery reads Codex models_cache.json and Claude session/settings models
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-6.5-nova", "display_name": "GPT-6.5 Nova", "description": "신규 출시 모델"}]}),
+        encoding="utf-8",
+    )
+    claude_home = tmp_path / "claude_home"
+    claude_home.mkdir()
+    (claude_home / "settings.json").write_text(json.dumps({"model": "claude-fable-5-3"}), encoding="utf-8")
+
+    refreshed_cat = model_settings.catalog(refresh=True, codex_home=codex_home, claude_home=claude_home)
+    assert any(m["id"] == "gpt-6.5-nova" and m["label"] == "GPT-6.5 Nova" for m in refreshed_cat["openai"])
+    assert any(m["id"] == "claude-fable-5-3" for m in refreshed_cat["claude"])
+
+    # 3. Custom model saved by user is permanently added to catalog
+    model_settings.save({"openai": "gpt-7-omega"})
+    after_save_cat = model_settings.catalog()
+    assert any(m["id"] == "gpt-7-omega" for m in after_save_cat["openai"])
+
+    # 4. HTTP endpoint /ops/models?refresh=1 returns catalog and mobile_urls
+    code, body = request(http_server, "GET", "/ops/models?refresh=1")
+    assert code == 200
+    payload = json.loads(body)
+    assert "catalog" in payload and "mobile_urls" in payload

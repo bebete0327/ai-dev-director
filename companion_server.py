@@ -22,6 +22,28 @@ STATIC_FILES = {'/': 'index.html', '/console.js': 'console.js', '/console.css': 
 _PICK_LOCK = threading.Lock()
 
 
+def detect_mobile_urls(port: int = 8081) -> list:
+    """Return reachable local Wi-Fi / LAN / Tailscale HTTP URLs for smartphone access while this PC/server is running."""
+    import socket
+    ips = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            primary_ip = s.getsockname()[0]
+            if primary_ip and not primary_ip.startswith("127."):
+                ips.append(primary_ip)
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254.") and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return [f"http://{ip}:{port}" for ip in ips[:3]]
+
+
 def pick_folder(initial: str = "", timeout: int = 300) -> dict:
     """Open the native folder dialog on this PC's desktop and return {'path': str} ('' when cancelled). One at a time."""
     if not _PICK_LOCK.acquire(blocking=False):
@@ -124,15 +146,18 @@ class CompanionHandler(d.DashboardHandler):
                 'efforts': model_settings.load_efforts(),
                 'effort_catalog': model_settings.effort_catalog(),
                 'usage_limits': quota_tracker.snapshot(),
+                'mobile_urls': detect_mobile_urls(self.server.server_address[1]),
                 'csrf': self.server.bridge_token,
             })
         if path == '/ops/models':
             from core import model_settings
+            refresh = parse_qs(urlsplit(self.path).query).get('refresh', [''])[0] == '1'
             return self._send_json({
                 'models': model_settings.load(),
-                'catalog': model_settings.catalog(),
+                'catalog': model_settings.catalog(refresh=refresh),
                 'efforts': model_settings.load_efforts(),
                 'effort_catalog': model_settings.effort_catalog(),
+                'mobile_urls': detect_mobile_urls(self.server.server_address[1]),
                 'csrf': self.server.bridge_token,
             })
         if path == '/ops/usage-limits':
@@ -228,6 +253,7 @@ class CompanionHandler(d.DashboardHandler):
                 d.invalidate_status_cache()
                 return self._send_json({
                     'models': models,
+                    'model_catalog': model_settings.catalog(),
                     'efforts': efforts,
                     'message': '모델/추론 강도 설정 저장됨 · 다음 AI 호출부터 적용됩니다.',
                 })

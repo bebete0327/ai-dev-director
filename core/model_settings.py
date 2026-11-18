@@ -1,14 +1,23 @@
-"""Validated, atomic per-provider CLI model preferences (passed via official --model flag; no API keys)."""
+"""Validated, atomic per-provider CLI model preferences & live model catalog discovery (passed via --model; no API keys)."""
 import json
 import os
 import re
+import shutil
+import sqlite3
+import tempfile
 import threading
-from typing import Dict, List, Optional
+import time
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from core.db_path import SOURCE_ROOT
 
 PATH = SOURCE_ROOT / "data" / "model_settings.json"
 LOCK = threading.Lock()
+_DISCOVERY_LOCK = threading.Lock()
+_DISCOVERY_CACHE: Dict[str, Any] = {"fetched_at": 0.0, "models": None}
+_DISCOVERY_TTL_SEC = 120.0
 
 PROVIDERS = ("claude", "antigravity", "openai")
 ALIASES = {
@@ -36,10 +45,11 @@ _SAFE_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()/\[\]:+-]{0,119}$")
 PRESETS: Dict[str, List[Dict[str, str]]] = {
     "claude": [
         {"id": "", "label": "CLI 기본값", "hint": "내 Claude 계정 기본 모델"},
-        {"id": "opus", "label": "Opus (최신)", "hint": "심층 설계 · 복잡한 코딩"},
+        {"id": "claude-fable-5-2", "label": "Claude Fable 5.2", "hint": "최신 5.2 심층 추론 · 코딩"},
+        {"id": "fable", "label": "Claude Fable (최신)", "hint": "Fable 최신 별칭"},
         {"id": "claude-opus-5-5", "label": "Claude Opus 5.5", "hint": "최상위 코딩 · 아키텍처"},
+        {"id": "opus", "label": "Opus (최신)", "hint": "심층 설계 · 복잡한 코딩"},
         {"id": "sonnet", "label": "Sonnet (최신)", "hint": "표준 빠른 개발 · 일상 작업"},
-        {"id": "fable", "label": "Claude Fable", "hint": "장시간 심층 추론"},
         {"id": "haiku", "label": "Haiku (최신)", "hint": "경량 고속 응답"},
     ],
     "antigravity": [
@@ -53,7 +63,8 @@ PRESETS: Dict[str, List[Dict[str, str]]] = {
     ],
     "openai": [
         {"id": "", "label": "CLI 기본값", "hint": "내 Codex 계정 기본 모델"},
-        {"id": "gpt-6-astra", "label": "GPT-6 Astra", "hint": "최고 난이도 추론 · 정밀 검수"},
+        {"id": "gpt-6.2-astra", "label": "GPT-6.2 Astra", "hint": "최신 6.2 최고 난이도 추론 · 검수"},
+        {"id": "gpt-6-astra", "label": "GPT-6 Astra", "hint": "고난도 추론 · 정밀 검수"},
         {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol", "hint": "주력 코딩 에이전트 표준"},
         {"id": "gpt-6.1-terra", "label": "GPT-6.1 Terra", "hint": "빠른 검토 · 멀티모달"},
         {"id": "gpt-6-luna", "label": "GPT-6 Luna", "hint": "경량 고속 반복 작업"},
@@ -177,6 +188,12 @@ def load_efforts() -> Dict[str, str]:
     return base
 
 
+def _preserve_meta(raw: dict, out: dict) -> None:
+    for meta_key in ("_efforts", "_custom_models", "_discovered_models"):
+        if isinstance(raw.get(meta_key), dict):
+            out[meta_key] = raw[meta_key]
+
+
 def save(updates: dict) -> Dict[str, str]:
     if not isinstance(updates, dict) or not updates:
         raise ValueError("변경할 모델 설정을 지정해야 합니다.")
@@ -189,8 +206,20 @@ def save(updates: dict) -> Dict[str, str]:
         merged = load()
         merged.update(parsed)
         out = dict(merged)
-        if isinstance(raw.get("_efforts"), dict):
-            out["_efforts"] = raw["_efforts"]
+        _preserve_meta(raw, out)
+        # Automatically remember any custom model ID entered by the user so it stays in the clickable menu
+        custom = dict(out.get("_custom_models") or {})
+        for prov, mid in parsed.items():
+            if not mid:
+                continue
+            preset_ids = {item["id"].lower() for item in PRESETS.get(prov, [])}
+            if mid.lower() not in preset_ids:
+                lst = list(custom.get(prov) or [])
+                if not any(isinstance(x, dict) and str(x.get("id", "")).lower() == mid.lower() for x in lst):
+                    lst.insert(0, {"id": mid, "label": mid, "hint": "직접 추가한 모델"})
+                    custom[prov] = lst[:15]
+        if custom:
+            out["_custom_models"] = custom
         _write_raw(out)
     return merged
 
@@ -207,9 +236,260 @@ def save_efforts(updates: dict) -> Dict[str, str]:
         merged_eff = load_efforts()
         merged_eff.update(parsed)
         out = load()
+        _preserve_meta(raw, out)
         out["_efforts"] = merged_eff
         _write_raw(out)
     return merged_eff
+
+
+def _pretty_model_label(model_id: str, display_name: str = "") -> str:
+    if display_name and display_name.strip():
+        return display_name.strip()
+    s = model_id.strip()
+    low = s.lower()
+    if low.startswith("claude-"):
+        parts = s.split("-")
+        # e.g., claude-fable-5-2 -> Claude Fable 5.2
+        if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
+            return f"Claude {parts[1].capitalize()} {parts[2]}.{parts[3]}"
+        return s.replace("-", " ").title()
+    if low.startswith("gpt-"):
+        parts = s.split("-")
+        if len(parts) >= 3:
+            return f"GPT-{parts[1]} {' '.join(p.capitalize() for p in parts[2:])}"
+        return s.upper()
+    return s
+
+
+def _discover_codex_models(codex_home: Optional[Path] = None, force: bool = False) -> List[Dict[str, str]]:
+    home = codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    found: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(mid: str, label: str = "", hint: str = "Codex 감지 모델") -> None:
+        try:
+            norm = normalize_model(mid)
+        except ValueError:
+            return
+        if not norm or norm.lower() in seen:
+            return
+        seen.add(norm.lower())
+        found.append({
+            "id": norm,
+            "label": _pretty_model_label(norm, label),
+            "hint": (hint or "Codex 감지 모델")[:42],
+        })
+
+    # 1. ~/.codex/models_cache.json (official Codex CLI server model catalog cache)
+    cache_file = home / "models_cache.json"
+    if cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            models_list = data.get("models") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if isinstance(models_list, list):
+                for item in models_list:
+                    if isinstance(item, dict):
+                        mid = str(item.get("slug") or item.get("id") or item.get("model") or "").strip()
+                        lbl = str(item.get("display_name") or item.get("name") or item.get("title") or "").strip()
+                        desc = str(item.get("description") or "Codex CLI 지원 모델").strip()
+                        if mid:
+                            _add(mid, lbl, desc)
+                    elif isinstance(item, str):
+                        _add(item, "", "Codex CLI 지원 모델")
+        except Exception:
+            pass
+
+    # 2. ~/.codex/config.toml
+    cfg_toml = home / "config.toml"
+    if cfg_toml.exists():
+        try:
+            for line in cfg_toml.read_text(encoding="utf-8", errors="ignore").splitlines():
+                m = re.match(r'^\s*model\s*=\s*["\']([^"\']+)["\']', line)
+                if m:
+                    _add(m.group(1), "", "config.toml 설정 모델")
+        except Exception:
+            pass
+
+    # 3. Recent ~/.codex/sessions/**/*.jsonl
+    sess_dir = home / "sessions"
+    if sess_dir.exists():
+        try:
+            files = sorted(sess_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:10]
+            for f in files:
+                raw = f.read_text(encoding="utf-8", errors="ignore")[:65536]
+                for m in re.finditer(r'"model"\s*:\s*"([^"]+)"', raw):
+                    _add(m.group(1), "", "최근 Codex 세션 사용")
+        except Exception:
+            pass
+
+    return found
+
+
+def _discover_claude_models(claude_home: Optional[Path] = None, force: bool = False) -> List[Dict[str, str]]:
+    home = claude_home or Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+    found: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(mid: str, label: str = "", hint: str = "Claude 감지 모델") -> None:
+        if not mid or mid.startswith("<"):
+            return
+        try:
+            norm = normalize_model(mid)
+        except ValueError:
+            return
+        if not norm or norm.lower() in seen:
+            return
+        seen.add(norm.lower())
+        found.append({
+            "id": norm,
+            "label": _pretty_model_label(norm, label),
+            "hint": (hint or "Claude 감지 모델")[:42],
+        })
+
+    # 1. Live Anthropic /v1/models endpoint when force-refreshing and OAuth credentials exist
+    if force and os.environ.get("DIRECTOR_TESTING") != "1":
+        cred_file = home / ".credentials.json"
+        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        if not token and cred_file.exists():
+            try:
+                raw_c = json.loads(cred_file.read_text(encoding="utf-8"))
+                oauth = (raw_c.get("claudeAiOauth") or raw_c.get("anthropic") or {}) if isinstance(raw_c, dict) else {}
+                token = str(oauth.get("accessToken") or "").strip()
+            except Exception:
+                token = ""
+        if token:
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/models",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "User-Agent": "claude-code/2.1.289",
+                    "Accept": "application/json",
+                },
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+                    for item in payload["data"]:
+                        if isinstance(item, dict):
+                            mid = str(item.get("id") or "").strip()
+                            dname = str(item.get("display_name") or "").strip()
+                            if mid:
+                                _add(mid, dname, "Anthropic 실시간 조회")
+            except Exception:
+                pass
+
+    # 2. ~/.claude/settings.json
+    settings_file = home / "settings.json"
+    if settings_file.exists():
+        try:
+            st = json.loads(settings_file.read_text(encoding="utf-8"))
+            if isinstance(st, dict) and isinstance(st.get("model"), str):
+                _add(st["model"], "", "settings.json 설정 모델")
+        except Exception:
+            pass
+
+    # 3. Recent ~/.claude/projects/**/*.jsonl
+    proj_dir = home / "projects"
+    if proj_dir.exists():
+        try:
+            files = sorted(proj_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:15]
+            for f in files:
+                raw = f.read_text(encoding="utf-8", errors="ignore")
+                for m in re.finditer(r'"model"\s*:\s*"([^"<]+)"', raw):
+                    _add(m.group(1), "", "최근 Claude 세션 사용")
+        except Exception:
+            pass
+
+    return found
+
+
+def _discover_antigravity_models(vscdb_path: Optional[Path] = None) -> List[Dict[str, str]]:
+    found: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(mid: str, label: str = "", hint: str = "Antigravity 감지 모델") -> None:
+        try:
+            norm = normalize_model(mid)
+        except ValueError:
+            return
+        if not norm or norm.lower() in seen:
+            return
+        seen.add(norm.lower())
+        found.append({
+            "id": norm,
+            "label": label.strip() if label.strip() else norm,
+            "hint": (hint or "Antigravity 감지 모델")[:42],
+        })
+
+    from core import quota_tracker
+    candidates = [vscdb_path] if vscdb_path is not None else quota_tracker._antigravity_vscdb_candidates()
+    for p in candidates:
+        if p is None or not p.exists():
+            continue
+        tmp_copy: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="agy_models_", suffix=".sqlite", delete=False) as tf:
+                tmp_copy = Path(tf.name)
+            shutil.copy2(p, tmp_copy)
+            with sqlite3.connect(str(tmp_copy), timeout=2.0) as conn:
+                rows = conn.execute(
+                    "SELECT value FROM ItemTable WHERE key LIKE '%model%' OR key LIKE '%cascade%' OR key LIKE '%jetski%'"
+                ).fetchall()
+                for (val,) in rows:
+                    s_val = val.decode("utf-8", errors="ignore") if isinstance(val, bytes) else str(val or "")
+                    for m in re.finditer(r'"label"\s*:\s*"((?:Gemini|Orchestrator|Claude|GPT)[^"]{2,50})"', s_val):
+                        _add(m.group(1), m.group(1), "Antigravity 로컬 설정")
+        except Exception:
+            pass
+        finally:
+            if tmp_copy is not None:
+                try:
+                    tmp_copy.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    return found
+
+
+def discover_live_models(
+    force: bool = False,
+    codex_home: Optional[Path] = None,
+    claude_home: Optional[Path] = None,
+    agy_vscdb_path: Optional[Path] = None,
+) -> Dict[str, List[Dict[str, str]]]:
+    """Discover newly released or locally active models across Claude, Codex, and Antigravity."""
+    now = time.monotonic()
+    with _DISCOVERY_LOCK:
+        if (
+            not force
+            and codex_home is None
+            and claude_home is None
+            and agy_vscdb_path is None
+            and _DISCOVERY_CACHE["models"] is not None
+            and (now - _DISCOVERY_CACHE["fetched_at"]) < _DISCOVERY_TTL_SEC
+        ):
+            return _DISCOVERY_CACHE["models"]
+
+    discovered = {
+        "claude": _discover_claude_models(claude_home, force=force),
+        "openai": _discover_codex_models(codex_home, force=force),
+        "antigravity": _discover_antigravity_models(agy_vscdb_path),
+    }
+
+    if codex_home is None and claude_home is None and agy_vscdb_path is None:
+        with _DISCOVERY_LOCK:
+            _DISCOVERY_CACHE["fetched_at"] = now
+            _DISCOVERY_CACHE["models"] = discovered
+        if force and any(discovered.values()):
+            with LOCK:
+                raw = _read_raw()
+                raw["_discovered_models"] = discovered
+                _write_raw(raw)
+
+    return discovered
 
 
 def apply(config: dict) -> dict:
@@ -281,10 +561,58 @@ def domain_efforts(overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]
     return out
 
 
-def catalog() -> Dict[str, List[Dict[str, str]]]:
-    return {k: [dict(item) for item in items] for k, items in PRESETS.items()}
+def catalog(
+    refresh: bool = False,
+    codex_home: Optional[Path] = None,
+    claude_home: Optional[Path] = None,
+    agy_vscdb_path: Optional[Path] = None,
+) -> Dict[str, List[Dict[str, str]]]:
+    """Return full per-provider model catalog combining presets, live CLI/API discovery, and user-saved models."""
+    raw = _read_raw()
+    saved_active = load()
+    custom_map = raw.get("_custom_models") if isinstance(raw.get("_custom_models"), dict) else {}
+    persisted_disc = raw.get("_discovered_models") if isinstance(raw.get("_discovered_models"), dict) else {}
+    live_disc = discover_live_models(
+        force=refresh,
+        codex_home=codex_home,
+        claude_home=claude_home,
+        agy_vscdb_path=agy_vscdb_path,
+    )
+
+    out: Dict[str, List[Dict[str, str]]] = {}
+    for prov, base_items in PRESETS.items():
+        merged: List[Dict[str, str]] = []
+        seen_ids = set()
+
+        def _append_item(item: Dict[str, Any]) -> None:
+            if not isinstance(item, dict):
+                return
+            mid = str(item.get("id") if item.get("id") is not None else "")
+            key = mid.lower()
+            if key in seen_ids:
+                return
+            seen_ids.add(key)
+            merged.append({
+                "id": mid,
+                "label": str(item.get("label") or mid or "CLI 기본값"),
+                "hint": str(item.get("hint") or ""),
+            })
+
+        for b in base_items:
+            _append_item(b)
+        for d_item in (live_disc.get(prov) or []):
+            _append_item(d_item)
+        for p_item in (persisted_disc.get(prov) or []):
+            _append_item(p_item)
+        for c_item in (custom_map.get(prov) or []):
+            _append_item(c_item)
+        active_id = saved_active.get(prov, "")
+        if active_id:
+            _append_item({"id": active_id, "label": active_id, "hint": "현재 선택된 모델"})
+
+        out[prov] = merged
+    return out
 
 
 def effort_catalog() -> Dict[str, List[Dict[str, str]]]:
     return {k: [dict(item) for item in items] for k, items in EFFORT_PRESETS.items()}
-

@@ -44,13 +44,31 @@ async function getJSON(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok
 
 // ------------------------------------------------------------------ model
 const CLI={claude:'ANTHROPIC',antigravity:'GOOGLE',openai:'OPENAI'},CLI_OF={ANTHROPIC:'claude',GOOGLE:'antigravity',OPENAI:'openai'};
-let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSettings={},effortCatalog={},quotaSnapshot=null;
-async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;repaint();}catch(e){/* keep the last known roles */}}
+let roleSettings=null,roleToken=null,modelSettings={},modelCatalog={},effortSettings={},effortCatalog={},quotaSnapshot=null,mobileUrls=[];
+async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;if(r.models)modelSettings=r.models;if(r.model_catalog)modelCatalog=r.model_catalog;if(r.efforts)effortSettings=r.efforts;if(r.effort_catalog)effortCatalog=r.effort_catalog;if(r.usage_limits)quotaSnapshot=r.usage_limits;if(r.mobile_urls)mobileUrls=r.mobile_urls;repaint();}catch(e){/* keep the last known roles */}}
 async function refreshUsageLimits(manual){
   const btn=$('btn-refresh-usage');if(manual&&btn){btn.disabled=true;btn.textContent='갱신 중…';}
   try{quotaSnapshot=await getJSON('/ops/usage-limits'+(manual?'?force=1':''));paintQuotas();}
   catch(e){if(manual)notice('사용량 조회 실패 · '+e.message);}
   finally{if(manual&&btn){btn.disabled=false;btn.textContent='↻ 새로고침';}}
+}
+async function refreshModelCatalog(label,btn){
+  if(btn){btn.disabled=true;btn.textContent='갱신 중…';}
+  try{
+    const r=await getJSON('/ops/models?refresh=1');
+    if(r.models)modelSettings=r.models;
+    if(r.catalog)modelCatalog=r.catalog;
+    if(r.efforts)effortSettings=r.efforts;
+    if(r.effort_catalog)effortCatalog=r.effort_catalog;
+    if(r.mobile_urls)mobileUrls=r.mobile_urls;
+    const menu=$('role-menu');
+    menu.hidden=true;
+    openRoleMenu(label);
+    notice('최신 모델 목록을 새로고침했습니다.');
+  }catch(e){
+    notice('모델 목록 새로고침 실패 · '+e.message);
+    if(btn){btn.disabled=false;btn.textContent='↻ 모델 새로고침';}
+  }
 }
 function assignment(){
   if(roleSettings&&!isLiveNow())return {HEAD:CLI[roleSettings.head],BUILDER:CLI[roleSettings.builder],REVIEWER:CLI[roleSettings.reviewer]};
@@ -65,6 +83,7 @@ async function saveProviderModel(cliKey,aiName,val,menu){
     const res=await fetch('/ops/models',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':roleToken},body:JSON.stringify({[cliKey]:val})}),out=await res.json();
     if(!res.ok)throw Error(out.error||'모델 저장 실패');
     modelSettings=out.models||modelSettings;
+    if(out.model_catalog)modelCatalog=out.model_catalog;
     if(out.efforts)effortSettings=out.efforts;
     const picked=modelSettings[cliKey];
     notice(aiName+' 모델 → '+(picked||'CLI 기본값')+' (다음 호출부터 --model 적용)');
@@ -106,7 +125,10 @@ function openRoleMenu(label){
       catch(e){notice('역할 변경 실패 · '+e.message);}
       menu.hidden=true;repaint();};
     menu.append(b);}
-  menu.append(el('hr'),el('p',AI[curDom].name+' 모델 선택 (--model)'));
+  const mHead=el('div','','menu-head'),mRefresh=el('button','↻ 모델 새로고침','menu-refresh');
+  mRefresh.type='button';mRefresh.onclick=e=>{e.stopPropagation();refreshModelCatalog(label,mRefresh);};
+  mHead.append(el('p',AI[curDom].name+' 모델 선택 (--model)'),mRefresh);
+  menu.append(el('hr'),mHead);
   const presets=modelCatalog[curCli]||[{id:'',label:'CLI 기본값',hint:'계정 기본 모델'}],activeModel=(modelSettings&&modelSettings[curCli])||'';
   const presetIds=new Set(presets.map(item=>item.id));
   for(const item of presets){
@@ -117,8 +139,8 @@ function openRoleMenu(label){
     mb.onclick=()=>saveProviderModel(curCli,AI[curDom].name,item.id,menu);
     menu.append(mb);
   }
-  const form=el('form','','model-custom'),inp=el('input'),applyBtn=el('button','적용');
-  inp.type='text';inp.maxLength=120;inp.placeholder='모델 ID 직접 입력 (비우면 기본값)';
+  const form=el('form','','model-custom'),inp=el('input'),applyBtn=el('button','추가/적용');
+  inp.type='text';inp.maxLength=120;inp.placeholder='새 모델 ID 입력 시 목록에 자동 추가';
   if(activeModel&&!presetIds.has(activeModel))inp.value=activeModel;
   applyBtn.type='submit';
   form.onsubmit=e=>{e.preventDefault();saveProviderModel(curCli,AI[curDom].name,inp.value.trim(),menu);};
@@ -343,6 +365,13 @@ function paintQuotas(){
     const modelsText=(info.by_model||[]).slice(0,2).map(x=>x.model+' '+x.calls+'회/'+tok(x.tokens)).join(' · ');
     if(modelsText)row.append(el('small',modelsText,'quota-sub'));
     box.append(row);
+  }
+  if(Array.isArray(mobileUrls)&&mobileUrls.length){
+    const mBar=el('div','','mobile-access-bar');
+    mBar.append(el('span','📱 모바일 접속 (같은 Wi-Fi/Tailscale)','mobile-access-label'),el('code',mobileUrls[0],'mobile-access-url'));
+    mBar.title='클릭하면 모바일 접속 주소를 복사합니다 ('+mobileUrls.join(', ')+')';
+    mBar.onclick=()=>{try{navigator.clipboard.writeText(mobileUrls[0]);notice('모바일 접속 주소 복사됨 · '+mobileUrls[0]);}catch(e){notice('모바일 접속 주소: '+mobileUrls[0]);}};
+    box.append(mBar);
   }
 }
 let lastPhase=null;
