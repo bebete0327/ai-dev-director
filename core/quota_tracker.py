@@ -783,16 +783,22 @@ def _search_ya29_in_text(text: str, depth: int = 0) -> Optional[str]:
     for chunk in _B64_CHUNK_RE.findall(text):
         if len(chunk) < 36:
             continue
-        padded = chunk + ("=" * ((4 - len(chunk) % 4) % 4))
-        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-            try:
-                decoded_bytes = decoder(padded)
-            except Exception:
+        # Protobuf string fields in state.vscdb often prefix 1..3 ASCII tag/length characters
+        # immediately before the inner base64 payload; try offsets 0..3 to restore 4-byte alignment.
+        for offset in (0, 1, 2, 3):
+            sub = chunk[offset:]
+            if len(sub) < 32:
                 continue
-            decoded_str = decoded_bytes.decode("utf-8", errors="ignore")
-            found = _search_ya29_in_text(decoded_str, depth + 1)
-            if found:
-                return found
+            padded = sub + ("=" * ((4 - len(sub) % 4) % 4))
+            for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+                try:
+                    decoded_bytes = decoder(padded)
+                except Exception:
+                    continue
+                decoded_str = decoded_bytes.decode("utf-8", errors="ignore")
+                found = _search_ya29_in_text(decoded_str, depth + 1)
+                if found:
+                    return found
     return None
 
 
@@ -945,8 +951,11 @@ def _parse_antigravity_quota_payload(payload: Dict[str, Any], now_ts: Optional[f
                 q_info = cfg.get("quotaInfo")
                 if not isinstance(q_info, dict):
                     continue
-                lbl = str(cfg.get("label") or "").lower()
-                pool = "Gemini" if "gemini" in lbl else ("Claude/GPT" if ("claude" in lbl or "gpt" in lbl) else "모델")
+                lbl = (str(cfg.get("label") or "") + " " + str(cfg.get("modelOrAlias") or "")).lower()
+                if any(k in lbl for k in ("claude", "gpt", "fable", "sonnet", "opus", "haiku", "astra", "o3", "o4", "sol", "terra", "luna", "3p")):
+                    pool = "Claude/GPT"
+                else:
+                    pool = "Gemini"
                 rem_f = q_info.get("remainingFraction", 0.0)
                 try:
                     rem_p = round(max(0.0, min(100.0, float(rem_f) * 100.0)), 1)

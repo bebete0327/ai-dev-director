@@ -81,6 +81,51 @@ def _redirect_null_streams(data_dir: Path) -> None:
         sys.stderr = open(data_dir / "companion.err", "a", encoding="utf-8", buffering=1)
 
 
+def _stop_outdated_companion(port: int, csrf_token: str = "", timeout: float = 1.5) -> None:
+    token = csrf_token
+    if not token:
+        try:
+            from core.db_path import SOURCE_ROOT
+            t_file = SOURCE_ROOT / "data" / "solomon-bridge.token"
+            if t_file.exists():
+                token = t_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    if token:
+        conn = None
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+            conn.request(
+                "POST",
+                "/ops/shutdown",
+                headers={
+                    "X-Solomon-Bridge": token,
+                    "Host": f"127.0.0.1:{port}",
+                    "Origin": f"http://127.0.0.1:{port}",
+                },
+            )
+            resp = conn.getresponse()
+            resp.read()
+        except Exception:
+            pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=0.4)
+            c.request("GET", "/ops/state")
+            c.getresponse().read()
+            c.close()
+            time.sleep(0.15)
+        except Exception:
+            return
+
+
 def is_companion_alive(port: int, timeout: float = 1.5) -> bool:
     conn = None
     try:
@@ -91,7 +136,14 @@ def is_companion_alive(port: int, timeout: float = 1.5) -> bool:
         if resp.status != 200:
             return False
         payload = json.loads(body.decode("utf-8", errors="replace"))
-        return isinstance(payload, dict) and "solomon_url" in payload
+        if not (isinstance(payload, dict) and "solomon_url" in payload):
+            return False
+        if "tunnel" not in payload or "mobile_urls" not in payload:
+            conn.close()
+            conn = None
+            _stop_outdated_companion(port, csrf_token=str(payload.get("csrf") or ""), timeout=timeout)
+            return False
+        return True
     except Exception:
         return False
     finally:
@@ -151,6 +203,11 @@ def open_app_window(url: str, profile_dir: Optional[Path] = None) -> Optional[su
 def _shutdown_all(server, win_proc: Optional[subprocess.Popen] = None) -> None:
     """Stop active CLI child processes, shut down the HTTP server, and close the app window if still open."""
     server.stopping = True
+    try:
+        import companion_server
+        companion_server.stop_mobile_tunnel()
+    except Exception:
+        pass
     try:
         from core.process_runner import ProcessTreeRunner
         ProcessTreeRunner.kill_active()
