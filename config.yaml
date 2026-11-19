@@ -19,10 +19,10 @@ reviewer:
   executable: null        # Discovered automatically via resolve_cli('codex')
 
 timeouts:
-  head: 300
-  builder: 600
-  reviewer: 300
-  no_progress: 180
+  head: 900
+  builder: 2400
+  reviewer: 900
+  no_progress: 600
   heartbeat: 30
 
 safety:

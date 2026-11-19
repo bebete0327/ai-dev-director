@@ -127,7 +127,7 @@ class ProviderManager:
     """
 
     def __init__(self, timeouts: Optional[Dict[str, int]] = None, db_path: Optional[str] = None):
-        self.timeouts = timeouts or {"head": 300, "builder": 600, "reviewer": 300}
+        self.timeouts = timeouts or {"head": 900, "builder": 2400, "reviewer": 900}
         
         from core.db_path import get_db_path
         if db_path is None:

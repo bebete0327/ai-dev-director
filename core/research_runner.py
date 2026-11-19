@@ -43,8 +43,8 @@ class TriadResearchRunner:
 
     MAX_ATTEMPTS = 2   # initial attempt + 1 bounded retry; never more, per V3.0-H hardening scope
 
-    def __init__(self, executables: Optional[Dict[str, str]] = None, timeout: float = 300.0,
-                 no_output_timeout: float = 180.0, heartbeat_interval: float = 30.0,
+    def __init__(self, executables: Optional[Dict[str, str]] = None, timeout: float = 900.0,
+                 no_output_timeout: float = 600.0, heartbeat_interval: float = 30.0,
                  models: Optional[Dict[str, str]] = None, efforts: Optional[Dict[str, str]] = None):
         from core.model_settings import domain_efforts, domain_models
         configured = dict(executables or {})
@@ -60,9 +60,10 @@ class TriadResearchRunner:
         self.heartbeat_interval = heartbeat_interval
         self._versions: Dict[str, str] = {}
 
-    def _command(self, domain: str, executable: str, prompt: str):
-        chosen = (self.models or {}).get(domain, "")
-        effort = (self.efforts or {}).get(domain, "")
+    def _command(self, domain: str, executable: str, prompt: str, use_cli_default: bool = False):
+        force_default = use_cli_default or getattr(self, "_use_cli_default", False)
+        chosen = "" if force_default else (self.models or {}).get(domain, "")
+        effort = "" if force_default else (self.efforts or {}).get(domain, "")
         if domain == "OPENAI":
             # Codex official help: omitting PROMPT (or using '-') reads it from stdin.  This is required on
             # Windows where synthesis/cross-critique evidence can exceed CreateProcess' command-line limit.
@@ -88,6 +89,10 @@ class TriadResearchRunner:
                 desc.extend(["--effort", effort])
             return cmd, prompt, " ".join(desc)
         if domain == "GOOGLE":
+            from core.model_settings import canonicalize_provider_model, is_effort_supported_for_model
+            chosen = canonicalize_provider_model("antigravity", chosen)
+            if chosen and not is_effort_supported_for_model("antigravity", chosen):
+                effort = ""
             # Official AGY stream-json mode reads NDJSON from stdin. This avoids Windows command-line limits
             # without file-read tools or permission bypasses, and exposes an explicit final result event.
             message = {"event": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}}
@@ -217,30 +222,48 @@ class TriadResearchRunner:
             raise ValueError(f"unsupported TRIAD domain: {domain}")
         attempts: List[Dict[str, Any]] = []
         last_error: Optional[ResearchProviderCallError] = None
-        for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
-            retry_reason = attempts[-1]["error"] if attempts else None
-            try:
-                # Retries always resend the identical original `prompt` - never the previous attempt's
-                # output, never another provider's output, never a different provider.
-                attempt_prompt = prompt
-                if attempts and 'output token limit' in attempts[-1]['error'].lower() and stage == 'BUILDING':
-                    attempt_prompt += '\nOUTPUT BUDGET: Return a complete, compact JSON object containing only necessary changed files. Minimize commentary and redundant code. Do not continue a truncated JSON fragment.'
-                result = self._invoke_once(normalized, attempt_prompt, cwd, stage)
-                result["attempts"] = attempts
-                result["attempt_number"] = attempt_number
-                return result
-            except ResearchProviderCallError as exc:
-                if stage == 'BUILDING' and str(exc).startswith('GOOGLE_STREAM_FAILED:') and 'output token limit' in str(exc).lower():
-                    exc.retryable = True
-                record = dict(exc.meta)
-                record.update({
-                    "attempt_number": attempt_number, "outcome": "FAILED",
-                    "error": str(exc), "retryable": exc.retryable, "retry_reason": retry_reason,
-                })
-                attempts.append(record)
-                last_error = exc
-                if not exc.retryable or attempt_number >= self.MAX_ATTEMPTS:
-                    break
+        has_custom_google_opts = normalized == "GOOGLE" and bool(
+            (self.models or {}).get("GOOGLE") or (self.efforts or {}).get("GOOGLE")
+        )
+        self._use_cli_default = False
+        try:
+            for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
+                retry_reason = attempts[-1]["error"] if attempts else None
+                try:
+                    # Retries always resend the identical original `prompt` - never the previous attempt's
+                    # output, never another provider's output, never a different provider.
+                    attempt_prompt = prompt
+                    if attempts and 'output token limit' in attempts[-1]['error'].lower() and stage == 'BUILDING':
+                        attempt_prompt += '\nOUTPUT BUDGET: Return a complete, compact JSON object containing only necessary changed files. Minimize commentary and redundant code. Do not continue a truncated JSON fragment.'
+                    result = self._invoke_once(normalized, attempt_prompt, cwd, stage)
+                    result["attempts"] = attempts
+                    result["attempt_number"] = attempt_number
+                    return result
+                except ResearchProviderCallError as exc:
+                    msg = str(exc)
+                    if stage == 'BUILDING' and msg.startswith('GOOGLE_STREAM_FAILED:') and 'output token limit' in msg.lower():
+                        exc.retryable = True
+                    elif (
+                        has_custom_google_opts
+                        and not self._use_cli_default
+                        and (msg.startswith("GOOGLE CLI exit ") or msg.startswith("GOOGLE_STREAM_FAILED:"))
+                        and ErrorCategory.classify(msg) not in (ErrorCategory.AUTH, ErrorCategory.PROVIDER_UNAVAILABLE, ErrorCategory.CONFIG_ERROR)
+                    ):
+                        # If the operator selected an Ultra-only or unsupported --model/--effort on Antigravity,
+                        # fall back to the signed-in account's CLI default model instead of failing over to Claude.
+                        self._use_cli_default = True
+                        exc.retryable = True
+                    record = dict(exc.meta)
+                    record.update({
+                        "attempt_number": attempt_number, "outcome": "FAILED",
+                        "error": msg, "retryable": exc.retryable, "retry_reason": retry_reason,
+                    })
+                    attempts.append(record)
+                    last_error = exc
+                    if not exc.retryable or attempt_number >= self.MAX_ATTEMPTS:
+                        break
+        finally:
+            self._use_cli_default = False
         prior = attempts[:-1]
         final_meta = dict(attempts[-1]) if attempts else {}
         final_meta["attempts"] = prior
