@@ -41,7 +41,7 @@ class Orchestrator:
     ):
         self.config = config
         self.sm = state_machine or StateMachine()
-        self.timeouts = self.config.get("timeouts", {"head": 300, "builder": 600, "reviewer": 300})
+        self.timeouts = self.config.get("timeouts", {"head": 900, "builder": 2400, "reviewer": 900})
         self.pm = ProviderManager(timeouts=self.timeouts)
         
         # User-supplied agents (e.g. for unit tests) or default initialization
@@ -70,8 +70,8 @@ class Orchestrator:
         head_cfg = self.config.get("head", {})
         provider = (provider_override or head_cfg.get("provider", "openai")).lower()
         executable = head_cfg.get("executable") if not provider_override else None
-        timeout = self.timeouts.get("head", 300)
-        no_progress_timeout = self.timeouts.get("no_progress", 180)
+        timeout = self.timeouts.get("head", 900)
+        no_progress_timeout = self.timeouts.get("no_progress", 600)
         heartbeat_interval = self.timeouts.get("heartbeat", 30)
 
         if provider in ('google', 'antigravity'):
@@ -99,8 +99,8 @@ class Orchestrator:
         effort = self._resolve_role_effort(provider, b_cfg, overridden=bool(provider_override))
         executable = b_cfg.get("executable") if not provider_override else None
         approved = self.config.get("safety", {}).get("approved_commands")
-        timeout = self.timeouts.get("builder", 600)
-        no_progress_timeout = self.timeouts.get("no_progress", 180)
+        timeout = self.timeouts.get("builder", 2400)
+        no_progress_timeout = self.timeouts.get("no_progress", 600)
         heartbeat_interval = self.timeouts.get("heartbeat", 30)
         cls = AntigravityBuilder
         if b_cfg.get('mode') == 'proposal':
@@ -114,8 +114,8 @@ class Orchestrator:
         rev_cfg = self.config.get("reviewer", {})
         provider = (provider_override or rev_cfg.get("provider", "codex")).lower()
         executable = rev_cfg.get("executable") if not provider_override else None
-        timeout = self.timeouts.get("reviewer", 300)
-        no_progress_timeout = self.timeouts.get("no_progress", 180)
+        timeout = self.timeouts.get("reviewer", 900)
+        no_progress_timeout = self.timeouts.get("no_progress", 600)
         heartbeat_interval = self.timeouts.get("heartbeat", 30)
 
         if provider in ('google', 'antigravity'):

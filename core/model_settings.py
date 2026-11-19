@@ -53,13 +53,14 @@ PRESETS: Dict[str, List[Dict[str, str]]] = {
         {"id": "haiku", "label": "Haiku (최신)", "hint": "경량 고속 응답"},
     ],
     "antigravity": [
-        {"id": "", "label": "CLI 기본값", "hint": "내 Antigravity 계정 기본 모델"},
-        {"id": "Orchestrator (Argon)", "label": "Orchestrator (Argon)", "hint": "계획 Argon + 구현 Hydrogen 협업"},
-        {"id": "Orchestrator (Carbon)", "label": "Orchestrator (Carbon)", "hint": "계획 Carbon + 구현 Hydrogen"},
-        {"id": "Gemini 4 Hydrogen", "label": "Gemini 4 Hydrogen", "hint": "빠른 주력 구현 에이전트"},
-        {"id": "Gemini 4 Argon", "label": "Gemini 4 Argon", "hint": "심층 추론 · 설계"},
-        {"id": "Gemini 4 Carbon", "label": "Gemini 4 Carbon", "hint": "최상위 추론"},
-        {"id": "Gemini 3.8 Flash", "label": "Gemini 3.8 Flash", "hint": "초고속 경량"},
+        {"id": "", "label": "CLI 기본값 (권장)", "hint": "내 요금제 기본 모델 자동 선택"},
+        {"id": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen", "hint": "빠른 주력 구현 · 전 요금제 지원"},
+        {"id": "gemini-4-neon", "label": "Gemini 4 Neon", "hint": "심층 추론 · 코딩 (Pro/Ultra)"},
+        {"id": "gemini-4-argon", "label": "Gemini 4 Argon", "hint": "심층 설계 · 추론 (Pro/Ultra)"},
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "hint": "초고속 경량 · 전 요금제 지원"},
+        {"id": "gemini-4-carbon", "label": "Gemini 4 Carbon", "hint": "최상위 추론 (Ultra 전용)"},
+        {"id": "gemini-pro-orchestrator-g1-pro", "label": "Orchestrator (Argon)", "hint": "계획+구현 협업 (Pro/Ultra)"},
+        {"id": "Orchestrator", "label": "Orchestrator (Carbon)", "hint": "최상위 협업 에이전트 (Ultra 전용)"},
     ],
     "openai": [
         {"id": "", "label": "CLI 기본값", "hint": "내 Codex 계정 기본 모델"},
@@ -69,6 +70,20 @@ PRESETS: Dict[str, List[Dict[str, str]]] = {
         {"id": "gpt-6.1-terra", "label": "GPT-6.1 Terra", "hint": "빠른 검토 · 멀티모달"},
         {"id": "gpt-6-luna", "label": "GPT-6 Luna", "hint": "경량 고속 반복 작업"},
     ],
+}
+
+AGY_MODEL_ALIASES: Dict[str, str] = {
+    "gemini 4 neon": "gemini-4-neon",
+    "gemini 4 carbon": "gemini-4-carbon",
+    "gemini 4 argon": "gemini-4-argon",
+    "gemini 4 hydrogen": "gemini-4-hydrogen",
+    "gemini 3.8 flash": "gemini-3.8-flash",
+    "gemini 3.7 flash": "gemini-3.7-flash",
+    "gemini 3.1 pro": "gemini-3.1-pro",
+    "orchestrator": "Orchestrator",
+    "orchestrator (carbon)": "Orchestrator",
+    "orchestrator (neon)": "Orchestrator",
+    "orchestrator (argon)": "gemini-pro-orchestrator-g1-pro",
 }
 
 EFFORT_PRESETS: Dict[str, List[Dict[str, str]]] = {
@@ -85,7 +100,7 @@ EFFORT_PRESETS: Dict[str, List[Dict[str, str]]] = {
         {"id": "low", "label": "Low", "hint": "빠른 경량 사고"},
         {"id": "medium", "label": "Medium", "hint": "표준 균형"},
         {"id": "high", "label": "High", "hint": "깊은 설계 · 추론"},
-        {"id": "max", "label": "Max", "hint": "최대 사고량"},
+        {"id": "xhigh", "label": "Extra (XHigh)", "hint": "최대 사고량 (Hydrogen/Neon)"},
     ],
     "openai": [
         {"id": "", "label": "기본값", "hint": "CLI 기본 추론 강도"},
@@ -123,6 +138,27 @@ def normalize_model(value: Optional[str]) -> str:
     return cleaned
 
 
+def canonicalize_provider_model(provider: Optional[str], value: Optional[str]) -> str:
+    """Normalize and map display labels (e.g. 'Gemini 4 Carbon') to exact CLI model slugs ('gemini-4-carbon')."""
+    norm = normalize_model(value)
+    if not norm:
+        return ""
+    prov = ALIASES.get(str(provider or "").strip().lower(), "")
+    if prov == "antigravity":
+        return AGY_MODEL_ALIASES.get(norm.lower(), norm)
+    return norm
+
+
+def is_effort_supported_for_model(provider: Optional[str], model_id: Optional[str]) -> bool:
+    """Return False when a CLI rejects --effort for a specific model family (e.g. Antigravity Orchestrator or 3P)."""
+    prov = ALIASES.get(str(provider or "").strip().lower(), "")
+    mid = (model_id or "").strip().lower()
+    if prov == "antigravity" and mid:
+        if "orchestrator" in mid or mid.startswith(("claude", "gpt")):
+            return False
+    return True
+
+
 def normalize_effort(provider: Optional[str], value: Optional[str]) -> str:
     """Return '' for CLI default, or a validated reasoning-effort token for the given provider."""
     if value is None:
@@ -134,6 +170,8 @@ def normalize_effort(provider: Optional[str], value: Optional[str]) -> str:
         return ""
     if provider:
         prov = normalize_provider(provider)
+        if prov == "antigravity" and cleaned == "max":
+            cleaned = "xhigh"
         if cleaned not in _VALID_EFFORTS[prov]:
             raise ValueError(f"{prov}에서 지원하지 않는 추론 강도입니다: {cleaned}")
         return cleaned
@@ -165,8 +203,9 @@ def load() -> Dict[str, str]:
     raw = _read_raw()
     for k, v in raw.items():
         if str(k).strip().lower() in ALIASES:
+            prov = ALIASES[str(k).strip().lower()]
             try:
-                base[ALIASES[str(k).strip().lower()]] = normalize_model(str(v) if v is not None else "")
+                base[prov] = canonicalize_provider_model(prov, str(v) if v is not None else "")
             except ValueError:
                 pass
     return base
@@ -200,7 +239,7 @@ def save(updates: dict) -> Dict[str, str]:
     parsed: Dict[str, str] = {}
     for k, v in updates.items():
         prov = normalize_provider(k)
-        parsed[prov] = normalize_model(v)
+        parsed[prov] = canonicalize_provider_model(prov, v)
     with LOCK:
         raw = _read_raw()
         merged = load()
@@ -247,6 +286,8 @@ def _pretty_model_label(model_id: str, display_name: str = "") -> str:
         return display_name.strip()
     s = model_id.strip()
     low = s.lower()
+    if low.startswith("gemini-"):
+        return s.replace("-", " ").title()
     if low.startswith("claude-"):
         parts = s.split("-")
         # e.g., claude-fable-5-2 -> Claude Fable 5.2
@@ -407,23 +448,36 @@ def _discover_claude_models(claude_home: Optional[Path] = None, force: bool = Fa
     return found
 
 
-def _discover_antigravity_models(vscdb_path: Optional[Path] = None) -> List[Dict[str, str]]:
+def _discover_antigravity_models(vscdb_path: Optional[Path] = None, force: bool = False) -> List[Dict[str, str]]:
     found: List[Dict[str, str]] = []
     seen = set()
 
     def _add(mid: str, label: str = "", hint: str = "Antigravity 감지 모델") -> None:
         try:
-            norm = normalize_model(mid)
+            norm = canonicalize_provider_model("antigravity", mid)
         except ValueError:
             return
-        if not norm or norm.lower() in seen:
+        if not norm or " " in norm or norm.lower() in seen:
             return
         seen.add(norm.lower())
         found.append({
             "id": norm,
-            "label": label.strip() if label.strip() else norm,
+            "label": _pretty_model_label(norm, label),
             "hint": (hint or "Antigravity 감지 모델")[:42],
         })
+
+    # 1. Official 'agy models' CLI catalog probe on force refresh
+    if force and os.environ.get("DIRECTOR_TESTING") != "1":
+        try:
+            from core.env_utils import resolve_cli, run_capture
+            agy_bin = resolve_cli("agy")
+            if agy_bin and Path(agy_bin).exists():
+                res = run_capture([agy_bin, "models"], timeout=4)
+                if res.returncode == 0 and res.stdout:
+                    for m in re.finditer(r'\b((?:gemini|claude|gpt)-[a-z0-9._-]+|Orchestrator)\b', res.stdout):
+                        _add(m.group(1), "", "agy models 실시간 조회")
+        except Exception:
+            pass
 
     from core import quota_tracker
     candidates = [vscdb_path] if vscdb_path is not None else quota_tracker._antigravity_vscdb_candidates()
@@ -441,8 +495,13 @@ def _discover_antigravity_models(vscdb_path: Optional[Path] = None) -> List[Dict
                 ).fetchall()
                 for (val,) in rows:
                     s_val = val.decode("utf-8", errors="ignore") if isinstance(val, bytes) else str(val or "")
-                    for m in re.finditer(r'"label"\s*:\s*"((?:Gemini|Orchestrator|Claude|GPT)[^"]{2,50})"', s_val):
-                        _add(m.group(1), m.group(1), "Antigravity 로컬 설정")
+                    for m in re.finditer(r'"(?:model|slug|modelId)"\s*:\s*"((?:gemini|claude|gpt)-[a-z0-9._-]+|Orchestrator)"', s_val):
+                        _add(m.group(1), "", "Antigravity 로컬 설정")
+                    for m in re.finditer(r'"label"\s*:\s*"((?:Gemini|Orchestrator)[^"]{2,50})"', s_val):
+                        raw_lbl = m.group(1).strip()
+                        slug = AGY_MODEL_ALIASES.get(raw_lbl.lower(), "")
+                        if slug:
+                            _add(slug, raw_lbl, "Antigravity 로컬 설정")
         except Exception:
             pass
         finally:
@@ -476,7 +535,7 @@ def discover_live_models(
     discovered = {
         "claude": _discover_claude_models(claude_home, force=force),
         "openai": _discover_codex_models(codex_home, force=force),
-        "antigravity": _discover_antigravity_models(agy_vscdb_path),
+        "antigravity": _discover_antigravity_models(agy_vscdb_path, force=force),
     }
 
     if codex_home is None and claude_home is None and agy_vscdb_path is None:
@@ -511,11 +570,11 @@ def apply(config: dict) -> dict:
 
 def effective_model(provider: str, configured_model: Optional[str] = None, config: Optional[dict] = None) -> str:
     prov = ALIASES.get(str(provider or "").strip().lower(), "")
-    explicit = normalize_model(configured_model)
+    explicit = canonicalize_provider_model(prov, configured_model)
     if explicit:
         return explicit
     if isinstance(config, dict) and isinstance(config.get("provider_models"), dict) and prov:
-        from_cfg = normalize_model(config["provider_models"].get(prov))
+        from_cfg = canonicalize_provider_model(prov, config["provider_models"].get(prov))
         if from_cfg:
             return from_cfg
     if prov:
@@ -543,7 +602,8 @@ def domain_models(overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     for k, v in (overrides or {}).items():
         dom = str(k or "").strip().upper()
         if dom in DOMAIN_TO_PROVIDER:
-            norm = normalize_model(v)
+            prov = DOMAIN_TO_PROVIDER[dom]
+            norm = canonicalize_provider_model(prov, v)
             if norm:
                 out[dom] = norm
     return out
@@ -587,7 +647,13 @@ def catalog(
         def _append_item(item: Dict[str, Any]) -> None:
             if not isinstance(item, dict):
                 return
-            mid = str(item.get("id") if item.get("id") is not None else "")
+            raw_mid = str(item.get("id") if item.get("id") is not None else "")
+            try:
+                mid = canonicalize_provider_model(prov, raw_mid) if raw_mid else ""
+            except ValueError:
+                return
+            if prov == "antigravity" and mid and " " in mid:
+                return
             key = mid.lower()
             if key in seen_ids:
                 return

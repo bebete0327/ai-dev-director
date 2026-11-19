@@ -33,13 +33,13 @@ def test_model_settings_validation_and_persistence(tmp_path, monkeypatch):
     })
     assert saved == {
         "claude": "opus",
-        "antigravity": "Orchestrator (Argon)",
+        "antigravity": "gemini-pro-orchestrator-g1-pro",
         "openai": "gpt-6-astra",
     }
     # Resetting one provider to 'default' clears it while keeping the others
     updated = model_settings.save({"claude": "default"})
     assert updated["claude"] == ""
-    assert updated["antigravity"] == "Orchestrator (Argon)"
+    assert updated["antigravity"] == "gemini-pro-orchestrator-g1-pro"
 
     # Reject CLI flag injection or control characters without corrupting file
     for bad in ("--dangerously-skip-permissions", "-m", "opus\n--bad", "bad;rm"):
@@ -57,7 +57,7 @@ def test_orchestrator_applies_provider_models_and_keeps_failover_provider_safe(t
     cfg = model_settings.apply(role_settings.apply({}))
     orch = Orchestrator(cfg)
     assert orch.head.model == "opus"
-    assert orch.builder.model == "Gemini 4 Hydrogen"
+    assert orch.builder.model == "gemini-4-hydrogen"
     assert orch.reviewer.model == "gpt-6.1-sol"
 
     # Failover override from Claude HEAD -> OpenAI HEAD must use OpenAI's model, NEVER Claude's 'opus'!
@@ -83,7 +83,7 @@ def test_cli_commands_inject_model_flag_only_when_selected(tmp_path, monkeypatch
         "/bin/claude", "--print", "--output-format", "json", "--model", "claude-opus-5-5"
     ]
     assert r_custom._command("GOOGLE", "/bin/agy", "hi")[0] == [
-        "/bin/agy", "--model", "Orchestrator (Argon)", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
+        "/bin/agy", "--model", "gemini-pro-orchestrator-g1-pro", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
     ]
 
     # 2. Direct agent invocations (ClaudeHead, ClaudeReviewer, CodexHead, CodexReviewer)
@@ -128,7 +128,7 @@ def test_cli_commands_inject_model_flag_only_when_selected(tmp_path, monkeypatch
     )
     assert last_exec_argv()[1:4] == ["exec", "--model", "gpt-6-luna"]
 
-    # GoogleHead forwards model into TriadResearchRunner
+    # GoogleHead forwards canonicalized model into TriadResearchRunner
     gh_models = []
     monkeypatch.setattr(
         TriadResearchRunner,
@@ -141,11 +141,11 @@ def test_cli_commands_inject_model_flag_only_when_selected(tmp_path, monkeypatch
         }),
     )
     GoogleHead(executable=sys.executable, model="Gemini 4 Argon").chat("hello", {}, [])
-    assert gh_models == ["Gemini 4 Argon"]
+    assert gh_models == ["gemini-4-argon"]
 
     # AntigravityBuilder provenance carries custom model
-    ab = AntigravityBuilder(executable=sys.executable, model="Gemini 4 Hydrogen")
-    assert ab.get_provenance().model == "Gemini 4 Hydrogen"
+    ab = AntigravityBuilder(executable=sys.executable, model="gemini-4-hydrogen")
+    assert ab.get_provenance().model == "gemini-4-hydrogen"
 
 
 def test_ops_models_http_endpoint_and_roles_payload(http_server, tmp_path, monkeypatch):
@@ -305,7 +305,7 @@ def test_reasoning_effort_settings_and_cli_flags(tmp_path, monkeypatch):
         "/bin/claude", "--print", "--output-format", "json", "--model", "opus", "--effort", "max"
     ]
     assert r._command("GOOGLE", "/bin/agy", "hi")[0] == [
-        "/bin/agy", "--model", "Gemini 4 Argon", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
+        "/bin/agy", "--model", "gemini-4-argon", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
     ]
 
     # Codex & Claude local quota snapshot parsing (active vs expired resets_at)
@@ -564,4 +564,95 @@ def test_agy_protobuf_offset_and_pool_dedup_and_tunnel_state(http_server):
     assert code2 == 200
     ul = json.loads(body2)
     assert "mobile_urls" in ul and "tunnel" in ul
+
+
+def test_expanded_timeouts_and_antigravity_slug_canonicalization_and_cli_default_fallback(tmp_path, monkeypatch):
+    import subprocess
+    import yaml
+    from core import db_path
+
+    # 1. config.yaml and Orchestrator default timeouts are expanded (builder 2400s, head/reviewer 900s, no_progress 600s)
+    cfg = yaml.safe_load((Path(__file__).resolve().parent.parent / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["timeouts"]["builder"] == 2400
+    assert cfg["timeouts"]["head"] == 900
+    assert cfg["timeouts"]["reviewer"] == 900
+    assert cfg["timeouts"]["no_progress"] == 600
+
+    orch_default = Orchestrator({})
+    assert orch_default.builder.timeout == 2400
+    assert orch_default.builder.no_progress_timeout == 600
+    assert orch_default.head.timeout == 900
+    assert orch_default.reviewer.timeout == 900
+
+    # 2. Legacy untouched runtime config.yaml is automatically upgraded by ensure_runtime_files()
+    rt_dir = tmp_path / "runtime_root"
+    rt_dir.mkdir()
+    (rt_dir / "config.yaml").write_text(
+        "timeouts:\n  head: 300\n  builder: 600\n  reviewer: 300\n  no_progress: 180\n  heartbeat: 30\n",
+        encoding="utf-8",
+    )
+    db_path.ensure_runtime_files(root=rt_dir, bundle=Path(__file__).resolve().parent.parent)
+    migrated = yaml.safe_load((rt_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert migrated["timeouts"]["builder"] == 2400 and migrated["timeouts"]["no_progress"] == 600
+
+    # 3. Existing saved "Gemini 4 Carbon" display label in model_settings.json canonicalizes to "gemini-4-carbon",
+    #    legacy "max" effort maps to "xhigh", and Orchestrator omits --effort.
+    models_file = tmp_path / "legacy_models.json"
+    models_file.write_text(
+        json.dumps({"antigravity": "Gemini 4 Carbon", "_efforts": {"antigravity": "max"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_settings, "PATH", models_file)
+    assert model_settings.load()["antigravity"] == "gemini-4-carbon"
+    assert model_settings.load_efforts()["antigravity"] == "xhigh"
+
+    r_orch = TriadResearchRunner(
+        executables={"GOOGLE": "/bin/agy"},
+        models={"GOOGLE": "Orchestrator (Carbon)"},
+        efforts={"GOOGLE": "high"},
+    )
+    assert r_orch._command("GOOGLE", "/bin/agy", "hi")[0] == [
+        "/bin/agy", "--model", "Orchestrator", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
+    ]
+
+    # 4. If Antigravity rejects a tier-restricted custom model (e.g. gemini-4-carbon on non-Ultra -> exit 1),
+    #    TriadResearchRunner automatically retries with CLI account default (no --model / --effort) instead of
+    #    failing over to Claude Builder!
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    subprocess.run(["git", "init"], cwd=ws, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=ws, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=ws, check=True, capture_output=True)
+
+    seen_cmds = []
+
+    def fake_agy_run(argv, **kwargs):
+        if "--version" in argv:
+            return ProcessResult(exit_code=0, stdout="agy 1.0", stderr="", timed_out=False, duration_sec=0.05, pid=1)
+        seen_cmds.append(list(argv))
+        if "--model" in argv:
+            return ProcessResult(
+                exit_code=1,
+                stdout="",
+                stderr="INVALID_ARGUMENT: model gemini-4-carbon is not available for your subscription tier",
+                timed_out=False,
+                duration_sec=0.3,
+                pid=1,
+            )
+        stream_ok = json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": '{"files":[],"summary":"ok"}'}})+ "\n"
+        return ProcessResult(exit_code=0, stdout=stream_ok, stderr="", timed_out=False, duration_sec=0.4, pid=2)
+
+    monkeypatch.setattr(ProcessTreeRunner, "run", staticmethod(fake_agy_run))
+    runner = TriadResearchRunner(
+        executables={"GOOGLE": sys.executable},
+        models={"GOOGLE": "Gemini 4 Carbon"},
+        efforts={"GOOGLE": "high"},
+    )
+    res = runner.invoke("GOOGLE", "build step", str(ws), "BUILDING")
+    assert res["attempt_number"] == 2
+    assert len(seen_cmds) == 2
+    assert ["--model", "gemini-4-carbon", "--effort", "high"] == seen_cmds[0][1:5]
+    assert "--model" not in seen_cmds[1] and "--effort" not in seen_cmds[1]
+    assert res["output"] == '{"files":[],"summary":"ok"}'
+
 

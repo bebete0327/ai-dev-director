@@ -51,6 +51,15 @@ def ensure_runtime_files(root: Optional[Path] = None, bundle: Optional[Path] = N
                 shutil.copyfile(src, dest)
             elif name == "companion.json":
                 dest.write_text(json.dumps({"port": 8081, "allowed_projects": []}, indent=2) + "\n", encoding="utf-8")
+        elif name == "config.yaml":
+            try:
+                raw_cfg = dest.read_text(encoding="utf-8")
+                legacy_block = "timeouts:\n  head: 300\n  builder: 600\n  reviewer: 300\n  no_progress: 180"
+                upgraded_block = "timeouts:\n  head: 900\n  builder: 2400\n  reviewer: 900\n  no_progress: 600"
+                if legacy_block in raw_cfg:
+                    dest.write_text(raw_cfg.replace(legacy_block, upgraded_block, 1), encoding="utf-8")
+            except OSError:
+                pass
     return target
 
 

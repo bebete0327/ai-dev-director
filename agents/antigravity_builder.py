@@ -38,8 +38,8 @@ class AntigravityBuilder:
         approved_commands: Optional[List[str]] = None,
         model: str = "antigravity-cli",
         effort: Optional[str] = None,
-        timeout: int = 600,
-        no_progress_timeout: int = 180,
+        timeout: int = 2400,
+        no_progress_timeout: int = 600,
         heartbeat_interval: int = 30,
         **kwargs
     ):
@@ -601,9 +601,11 @@ except Exception as e:
             "directly into the allowed paths."
         )
 
-        from core.model_settings import effective_effort, normalize_model
-        chosen_model = normalize_model(self.model)
+        from core.model_settings import canonicalize_provider_model, effective_effort, is_effort_supported_for_model
+        chosen_model = canonicalize_provider_model("antigravity", self.model)
         chosen_effort = effective_effort("antigravity", getattr(self, "effort", ""))
+        if chosen_model and not is_effort_supported_for_model("antigravity", chosen_model):
+            chosen_effort = ""
         model_prefix = f"--model {chosen_model} " if chosen_model else ""
         effort_prefix = f"--effort {chosen_effort} " if chosen_effort else ""
         invocation_cmd = (
@@ -613,26 +615,31 @@ except Exception as e:
         self.logger.info(f"[Antigravity Builder] Subprocess execution: {self.executable} in {wt}")
 
         def _execute_agy() -> BuilderResultSchema:
-            # Antigravity's official stream protocol keeps long prompts off the Windows
-            # command line and provides an explicit terminal result event.  The same
-            # protocol is used by the read-only TRIAD runner; Builder remains writable
-            # only through the scoped settings installed above.
-            cmd = [self.executable]
-            if chosen_model:
-                cmd.extend(["--model", chosen_model])
-            if chosen_effort:
-                cmd.extend(["--effort", chosen_effort])
-            cmd.extend([
-                "--input-format", "stream-json",
-                "--output-format", "stream-json",
-                "--mode", "accept-edits",
-                "--sandbox"
-            ])
+            nonlocal invocation_cmd
+            active_model = chosen_model
+            active_effort = chosen_effort
             active_prompt = prompt_text
             attempts = []
             final_event = None
             res = None
             for attempt_no in range(1, 3):
+                cmd = [self.executable]
+                if active_model:
+                    cmd.extend(["--model", active_model])
+                if active_effort:
+                    cmd.extend(["--effort", active_effort])
+                cmd.extend([
+                    "--input-format", "stream-json",
+                    "--output-format", "stream-json",
+                    "--mode", "accept-edits",
+                    "--sandbox"
+                ])
+                m_pref = f"--model {active_model} " if active_model else ""
+                e_pref = f"--effort {active_effort} " if active_effort else ""
+                invocation_cmd = (
+                    f"agy {m_pref}{e_pref}--input-format stream-json --output-format stream-json "
+                    "--mode accept-edits --sandbox <stdin>"
+                )
                 message = {
                     "event": "user",
                     "message": {
@@ -670,18 +677,33 @@ except Exception as e:
                     (final_event or {}).get("status") != "SUCCESS"
                     and "output token limit" in detail.lower()
                 )
-                if not output_limited or attempt_no == 2:
-                    break
+                if output_limited and attempt_no == 1:
+                    self.logger.warning(
+                        "[Antigravity Builder] Output token limit reached; preserving edits and retrying once with a compact continuation"
+                    )
+                    active_prompt = (
+                        "CONTINUE THE CURRENT REPAIR IN THIS WORKTREE. Inspect the files already changed by your prior "
+                        "attempt, finish only the unresolved acceptance/review items, and use file-edit tools directly. "
+                        "Do not repeat code or explanations in the response. Keep the final response under 500 characters. "
+                        "Do not run commands. Preserve existing functions and tests."
+                    )
+                    continue
 
-                self.logger.warning(
-                    "[Antigravity Builder] Output token limit reached; preserving edits and retrying once with a compact continuation"
+                custom_opts_rejected = (
+                    attempt_no == 1
+                    and not res.timed_out
+                    and (active_model or active_effort)
+                    and (res.exit_code != 0 or (final_event is not None and final_event.get("status") != "SUCCESS"))
                 )
-                active_prompt = (
-                    "CONTINUE THE CURRENT REPAIR IN THIS WORKTREE. Inspect the files already changed by your prior "
-                    "attempt, finish only the unresolved acceptance/review items, and use file-edit tools directly. "
-                    "Do not repeat code or explanations in the response. Keep the final response under 500 characters. "
-                    "Do not run commands. Preserve existing functions and tests."
-                )
+                if custom_opts_rejected:
+                    self.logger.warning(
+                        "[Antigravity Builder] Selected Antigravity model/effort rejected; retrying once with CLI account default"
+                    )
+                    active_model = ""
+                    active_effort = ""
+                    continue
+
+                break
 
             assert res is not None
 
