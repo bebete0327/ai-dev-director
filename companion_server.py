@@ -558,6 +558,8 @@ def run():
     import os
     if '--cloud' in sys.argv or '--remote' in sys.argv or os.environ.get('DIRECTOR_TESTING') != '1':
         os.environ.setdefault('DIRECTOR_REMOTE_ACCESS', '1')
+    if os.environ.get('DIRECTOR_TESTING') != '1':
+        os.environ.setdefault('DIRECTOR_NO_CONSOLE', '1')
     server = create_server()
     host, port = server.server_address[:2]
     print(f'AI DEV × SOLOMON http://{host}:{port}', flush=True)
