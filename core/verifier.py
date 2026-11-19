@@ -69,6 +69,46 @@ class Verifier:
                 }
 
             combined_output = (res.stdout or "") + ("\n" + res.stderr if res.stderr else "")
+            if (
+                res.exit_code != 0
+                and "no module named pytest" in combined_output.lower()
+                and any("pytest" in str(tok).lower() for tok in argv)
+            ):
+                base_exe = os.path.basename(str(argv[0])).lower()
+                py_exe = (
+                    argv[0]
+                    if ("python" in base_exe or base_exe in ("py", "py.exe"))
+                    else (shutil.which("python") or shutil.which("python3") or sys.executable)
+                )
+                start_dirs = ["tests", "."] if (cwd / "tests").is_dir() else ["."]
+                for sdir in start_dirs:
+                    ut_argv = [py_exe, "-m", "unittest", "discover", "-s", sdir, "-p", "test*.py", "-v"]
+                    ut_res: ProcessResult = ProcessTreeRunner.run(
+                        argv=ut_argv,
+                        cwd=cwd_str,
+                        env=env,
+                        timeout=timeout,
+                        no_output_timeout=None,
+                    )
+                    ut_out = ((ut_res.stdout or "") + ("\n" + ut_res.stderr if ut_res.stderr else "")).strip()
+                    if ut_res.timed_out:
+                        return {
+                            "command": " ".join(ut_argv),
+                            "executed": True,
+                            "passed": False,
+                            "exit_code": -1,
+                            "output": f"Command timed out after {timeout} seconds: {ut_res.timeout_reason}",
+                        }
+                    if "ran 0 tests" in ut_out.lower() and sdir != start_dirs[-1]:
+                        continue
+                    ut_passed = (ut_res.exit_code == 0) and ("ran 0 tests" not in ut_out.lower())
+                    return {
+                        "command": " ".join(ut_argv),
+                        "executed": True,
+                        "passed": ut_passed,
+                        "exit_code": ut_res.exit_code if ut_passed else (ut_res.exit_code or 1),
+                        "output": f"[pytest 미설치 환경 -> 표준 unittest 자동 실행]\n{ut_out}",
+                    }
             passed = (res.exit_code == 0)
             return {
                 "command": cmd_str if isinstance(cmd_str, str) else " ".join(cmd_str),

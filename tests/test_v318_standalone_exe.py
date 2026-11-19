@@ -112,3 +112,23 @@ def test_launcher_pick_folder_flag_delegates_cleanly(monkeypatch):
     monkeypatch.setattr(pf, "main", lambda: (called.append(list(sys.argv[1:])), 0)[1])
     assert launcher.main(["--pick-folder", "C:/work"]) == 0
     assert called == [["C:/work"]]
+
+
+def test_verifier_falls_back_to_stdlib_unittest_when_pytest_missing(monkeypatch, tmp_path):
+    (tmp_path / "tests").mkdir()
+    calls = []
+
+    def fake_run(cls, argv, **kwargs):
+        calls.append(list(argv))
+        if "pytest" in argv:
+            return SimpleNamespace(timed_out=False, exit_code=1, stdout="", stderr="python.exe: No module named pytest")
+        if "-s" in argv and argv[argv.index("-s") + 1] == "tests":
+            return SimpleNamespace(timed_out=False, exit_code=0, stdout="", stderr="Ran 0 tests in 0.000s\n\nOK")
+        return SimpleNamespace(timed_out=False, exit_code=0, stdout="", stderr="Ran 4 tests in 0.012s\n\nOK")
+
+    monkeypatch.setattr("core.verifier.ProcessTreeRunner.run", classmethod(fake_run))
+    res = Verifier._execute_cmd("python -m pytest tests/", tmp_path)
+    assert res["passed"] is True
+    assert "unittest" in res["command"]
+    assert len(calls) == 3  # pytest -> unittest tests (0 ran) -> unittest . (4 ran)
+

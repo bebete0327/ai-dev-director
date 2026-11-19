@@ -397,6 +397,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if os.environ.get("DIRECTOR_TESTING") != "1":
             os.environ.setdefault("DIRECTOR_REMOTE_ACCESS", "1")
+            os.environ.setdefault("DIRECTOR_NO_CONSOLE", "1")
         import companion_server
         server = companion_server.create_server()
         run_desktop_session(server, url=url, profile_dir=profile_dir)
