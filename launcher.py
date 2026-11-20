@@ -126,8 +126,39 @@ def _stop_outdated_companion(port: int, csrf_token: str = "", timeout: float = 1
             return
 
 
-def is_companion_alive(port: int, timeout: float = 1.5) -> bool:
+def get_build_id() -> str:
+    """Deterministic fingerprint of the current code/executable so launching a newer .exe or updated git checkout
+    automatically stops and replaces an older background companion_server process."""
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        from core.db_path import BUNDLE_ROOT
+        if getattr(sys, "frozen", False) and sys.executable and Path(sys.executable).is_file():
+            st = Path(sys.executable).stat()
+            h.update(f"exe:{st.st_size}:{st.st_mtime_ns}".encode("utf-8"))
+        else:
+            for rel in (
+                "launcher.py",
+                "companion_server.py",
+                "dashboard_server.py",
+                "core/model_settings.py",
+                "core/research_runner.py",
+                "core/verifier.py",
+                "agents/antigravity_builder.py",
+                "console/stage.js",
+            ):
+                p = BUNDLE_ROOT / rel
+                if p.is_file():
+                    h.update(rel.encode("utf-8"))
+                    h.update(p.read_bytes())
+    except Exception:
+        h.update(b"fallback-v3.20")
+    return h.hexdigest()[:16]
+
+
+def is_companion_alive(port: int, timeout: float = 1.5, expected_build_id: Optional[str] = None) -> bool:
     conn = None
+    want_id = expected_build_id if expected_build_id is not None else get_build_id()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         conn.request("GET", "/ops/state")
@@ -138,7 +169,8 @@ def is_companion_alive(port: int, timeout: float = 1.5) -> bool:
         payload = json.loads(body.decode("utf-8", errors="replace"))
         if not (isinstance(payload, dict) and "solomon_url" in payload):
             return False
-        if "tunnel" not in payload or "mobile_urls" not in payload:
+        remote_id = str(payload.get("build_id") or "")
+        if "tunnel" not in payload or "mobile_urls" not in payload or (want_id and remote_id != want_id):
             conn.close()
             conn = None
             _stop_outdated_companion(port, csrf_token=str(payload.get("csrf") or ""), timeout=timeout)

@@ -83,12 +83,24 @@ def _same_path(a: str, b: str) -> bool:
 
 
 def latest_deliverable(project_path: str, store: Optional["MissionStore"] = None) -> Optional[str]:
-    """The newest existing worktree a previous mission on this project delivered (last PASSED milestone). Nothing is
-    merged into the user's project automatically, so follow-up requests continue from here instead of from scratch."""
+    """The newest existing worktree a previous mission on this project delivered (last PASSED milestone, or if a
+    previous mission finished with 0 PASSED milestones, the newest step worktree it worked on so '이어서 작업해줘'
+    does not throw away 6 steps of unmerged progress)."""
     store = store or MissionStore()
-    found = [m for m in store.all() if m.get("base_worktree") and _same_path(m.get("project_path", ""), project_path)
-             and m.get("status") != "RUNNING" and Path(m["base_worktree"]).is_dir()]
-    found.sort(key=lambda m: m.get("updated_at", ""))
+    same_proj = [m for m in store.all() if _same_path(m.get("project_path", ""), project_path) and m.get("status") != "RUNNING"]
+    same_proj.sort(key=lambda m: m.get("updated_at", ""))
+    if not same_proj:
+        return None
+    # Check the most recent mission first: if it has a base_worktree or a step worktree on disk, continue from there.
+    latest_m = same_proj[-1]
+    if latest_m.get("base_worktree") and Path(latest_m["base_worktree"]).is_dir():
+        return latest_m["base_worktree"]
+    for step in reversed(latest_m.get("steps") or []):
+        wt = (step.get("result") or {}).get("worktree_path")
+        if wt and Path(wt).is_dir():
+            return wt
+    # Fallback to any earlier mission with a recorded base_worktree
+    found = [m for m in same_proj if m.get("base_worktree") and Path(m["base_worktree"]).is_dir()]
     return found[-1]["base_worktree"] if found else None
 
 
@@ -239,6 +251,10 @@ class MissionRunner:
             return self._finish(mission, "INCOMPLETE", summary=plan.get("summary", ""),
                                 blocked=f"HEAD could not plan the next step: {plan.get('reason', '')}")
         if len(mission["steps"]) >= total:
+            attempt_wt = result.get("worktree_path")
+            if (plan.get("build_on_last_attempt") is True and result["final_state"] != State.PASS
+                    and attempt_wt and Path(attempt_wt).is_dir()):
+                mission["base_worktree"] = attempt_wt
             return self._finish(mission, "INCOMPLETE", summary=plan.get("summary", ""),
                                 blocked=f"step budget ({total}) used; next step was: {plan['order'].get('goal', '')}")
         # Consecutive failures end a mission - but an attempt HEAD chose to build on is progress, not a dead end

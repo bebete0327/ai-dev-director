@@ -54,13 +54,14 @@ PRESETS: Dict[str, List[Dict[str, str]]] = {
     ],
     "antigravity": [
         {"id": "", "label": "CLI 기본값 (권장)", "hint": "내 요금제 기본 모델 자동 선택"},
-        {"id": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen", "hint": "빠른 주력 구현 · 전 요금제 지원"},
-        {"id": "gemini-4-neon", "label": "Gemini 4 Neon", "hint": "심층 추론 · 코딩 (Pro/Ultra)"},
+        {"id": "gemini-4-neon", "label": "Gemini 4 Neon", "hint": "주력 심층 추론 · 코딩 (Pro/Ultra)"},
+        {"id": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen", "hint": "빠른 주력 구현 (Pro/Ultra)"},
         {"id": "gemini-4-argon", "label": "Gemini 4 Argon", "hint": "심층 설계 · 추론 (Pro/Ultra)"},
         {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "hint": "초고속 경량 · 전 요금제 지원"},
         {"id": "gemini-4-carbon", "label": "Gemini 4 Carbon", "hint": "최상위 추론 (Ultra 전용)"},
-        {"id": "gemini-pro-orchestrator-g1-pro", "label": "Orchestrator (Argon)", "hint": "계획+구현 협업 (Pro/Ultra)"},
-        {"id": "Orchestrator", "label": "Orchestrator (Carbon)", "hint": "최상위 협업 에이전트 (Ultra 전용)"},
+        {"id": "gemini-pro-orchestrator-neon", "label": "Orchestrator (Neon)", "hint": "Neon 계획 + Hydrogen 구현 (Pro/Ultra)"},
+        {"id": "gemini-pro-orchestrator-g1-pro", "label": "Orchestrator (Argon)", "hint": "Argon 계획 + Hydrogen 구현 (Pro/Ultra)"},
+        {"id": "gemini-pro-orchestrator", "label": "Orchestrator (Carbon)", "hint": "Carbon 계획 + Hydrogen 구현 (Ultra 전용)"},
     ],
     "openai": [
         {"id": "", "label": "CLI 기본값", "hint": "내 Codex 계정 기본 모델"},
@@ -74,17 +75,41 @@ PRESETS: Dict[str, List[Dict[str, str]]] = {
 
 AGY_MODEL_ALIASES: Dict[str, str] = {
     "gemini 4 neon": "gemini-4-neon",
+    "gemini 4 neon (xhigh)": "gemini-4-neon-xhigh",
+    "gemini 4 neon (extra)": "gemini-4-neon-xhigh",
+    "gemini 4 neon (high)": "gemini-4-neon-high",
+    "gemini 4 neon (medium)": "gemini-4-neon-medium",
+    "gemini 4 neon (low)": "gemini-4-neon-low",
     "gemini 4 carbon": "gemini-4-carbon",
+    "gemini 4 carbon (high)": "gemini-4-carbon-high",
+    "gemini 4 carbon (medium)": "gemini-4-carbon-medium",
+    "gemini 4 carbon (low)": "gemini-4-carbon-low",
     "gemini 4 argon": "gemini-4-argon",
+    "gemini 4 argon (high)": "gemini-4-argon-high",
+    "gemini 4 argon (medium)": "gemini-4-argon-medium",
+    "gemini 4 argon (low)": "gemini-4-argon-low",
     "gemini 4 hydrogen": "gemini-4-hydrogen",
+    "gemini 4 hydrogen (xhigh)": "gemini-4-hydrogen-xhigh",
+    "gemini 4 hydrogen (extra)": "gemini-4-hydrogen-xhigh",
+    "gemini 4 hydrogen (high)": "gemini-4-hydrogen-high",
+    "gemini 4 hydrogen (medium)": "gemini-4-hydrogen-medium",
+    "gemini 4 hydrogen (low)": "gemini-4-hydrogen-low",
     "gemini 3.8 flash": "gemini-3.8-flash",
+    "gemini 3.8 flash (high)": "gemini-3.8-flash-high",
+    "gemini 3.8 flash (medium)": "gemini-3.8-flash-medium",
+    "gemini 3.8 flash (low)": "gemini-3.8-flash-low",
     "gemini 3.7 flash": "gemini-3.7-flash",
+    "gemini 3.6 flash": "gemini-3.6-flash",
     "gemini 3.1 pro": "gemini-3.1-pro",
-    "orchestrator": "Orchestrator",
-    "orchestrator (carbon)": "Orchestrator",
-    "orchestrator (neon)": "Orchestrator",
+    "orchestrator": "gemini-pro-orchestrator",
+    "orchestrator (carbon)": "gemini-pro-orchestrator",
+    "orchestrator (neon)": "gemini-pro-orchestrator-neon",
     "orchestrator (argon)": "gemini-pro-orchestrator-g1-pro",
+    "gemini-pro-orchestrator-argon": "gemini-pro-orchestrator-g1-pro",
 }
+
+_AGY_CATALOG_LOCK = threading.Lock()
+_AGY_CATALOG_SLUGS: Dict[str, Any] = {"fetched_at": 0.0, "slugs": None}
 
 EFFORT_PRESETS: Dict[str, List[Dict[str, str]]] = {
     "claude": [
@@ -150,13 +175,103 @@ def canonicalize_provider_model(provider: Optional[str], value: Optional[str]) -
 
 
 def is_effort_supported_for_model(provider: Optional[str], model_id: Optional[str]) -> bool:
-    """Return False when a CLI rejects --effort for a specific model family (e.g. Antigravity Orchestrator or 3P)."""
+    """Return False when a CLI rejects --effort for a specific model family (e.g. Antigravity Orchestrator, 3P, or pre-suffixed slug)."""
     prov = ALIASES.get(str(provider or "").strip().lower(), "")
     mid = (model_id or "").strip().lower()
     if prov == "antigravity" and mid:
         if "orchestrator" in mid or mid.startswith(("claude", "gpt")):
             return False
+        if mid.endswith(("-low", "-medium", "-high", "-xhigh", "-max")):
+            return False
     return True
+
+
+def probe_agy_available_slugs(executable: Optional[str] = None, force: bool = False) -> Optional[List[str]]:
+    """Query `agy models` once per TTL to learn the exact model slugs enabled for the signed-in Google account.
+    Returns None in unit-test mode or if `agy models` cannot be queried."""
+    if os.environ.get("DIRECTOR_TESTING") == "1":
+        return None
+    now = time.monotonic()
+    with _AGY_CATALOG_LOCK:
+        if not force and _AGY_CATALOG_SLUGS["slugs"] is not None and (now - _AGY_CATALOG_SLUGS["fetched_at"]) < 300.0:
+            return list(_AGY_CATALOG_SLUGS["slugs"])
+    try:
+        from core.env_utils import resolve_cli, run_capture
+        agy_bin = executable or resolve_cli("agy")
+        if not agy_bin or not Path(agy_bin).exists():
+            return None
+        res = run_capture([str(agy_bin), "models"], timeout=4.0)
+        if res.returncode != 0 or not res.stdout:
+            return None
+        slugs: List[str] = []
+        seen = set()
+        for m in re.finditer(r"\b((?:gemini|claude|gpt)-[a-z0-9._-]+|Orchestrator)\b", res.stdout):
+            s = m.group(1)
+            if s.lower() not in seen:
+                seen.add(s.lower())
+                slugs.append(s)
+        if slugs:
+            with _AGY_CATALOG_LOCK:
+                _AGY_CATALOG_SLUGS["fetched_at"] = now
+                _AGY_CATALOG_SLUGS["slugs"] = slugs
+            return list(slugs)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_agy_cli_args(
+    model_id: Optional[str],
+    effort: Optional[str],
+    executable: Optional[str] = None,
+    available_slugs: Optional[List[str]] = None,
+):
+    """Resolve (model_slug, effort_arg) for headless `agy` invocation.
+    - Maps UI display names and legacy IDs to canonical slugs.
+    - Strips unsupported `xhigh` on Carbon/Argon/Flash models (clamping to `high`) so `agy` never fails with HTTP 400 THINKING_LEVEL_XHIGH.
+    - Strips `--effort` on Orchestrator, 3P, or already-suffixed slugs (`gemini-4-neon-high`).
+    - When `agy models` catalog is known for the user's subscription tier, resolves bare base names (e.g. `gemini-4-neon` -> `gemini-4-neon-high`)
+      or drops unavailable tier-gated models cleanly to `''` (CLI account default) BEFORE wasting a failing subprocess call."""
+    chosen = canonicalize_provider_model("antigravity", model_id)
+    eff = normalize_effort("antigravity", effort)
+    low = chosen.lower()
+
+    if eff == "xhigh" and low and not any(k in low for k in ("neon", "hydrogen")):
+        # Only Neon and Hydrogen advertise Extra/XHigh; Carbon/Argon/Flash reject xhigh with HTTP 400 INVALID_ARGUMENT
+        eff = "high"
+
+    if chosen and not is_effort_supported_for_model("antigravity", chosen):
+        eff = ""
+
+    slugs = available_slugs if available_slugs is not None else probe_agy_available_slugs(executable=executable)
+    if slugs and chosen:
+        by_low = {s.lower(): s for s in slugs}
+        if low in by_low:
+            chosen = by_low[low]
+        else:
+            # Try suffixed slug variants in `agy models` (e.g. `gemini-4-neon` + `high` -> `gemini-4-neon-high`)
+            candidates = []
+            if eff:
+                candidates.append(f"{low}-{eff}")
+            candidates.extend([f"{low}-high", f"{low}-medium", f"{low}-low"])
+            if "orchestrator" in low:
+                if "argon" in low or "g1-pro" in low:
+                    candidates.extend(["gemini-pro-orchestrator-argon", "gemini-pro-orchestrator-g1-pro"])
+                elif "neon" in low:
+                    candidates.extend(["gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-g1-pro"])
+                else:
+                    candidates.extend(["gemini-pro-orchestrator", "Orchestrator", "gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-argon", "gemini-pro-orchestrator-g1-pro"])
+            matched = next((by_low[c.lower()] for c in candidates if c.lower() in by_low), "")
+            if matched:
+                chosen = matched
+                if not is_effort_supported_for_model("antigravity", chosen):
+                    eff = ""
+            else:
+                # Model is not available on this subscription tier (e.g. Carbon on Pro/Plus): fall back immediately to CLI default!
+                chosen = ""
+                eff = ""
+
+    return chosen, eff
 
 
 def normalize_effort(provider: Optional[str], value: Optional[str]) -> str:

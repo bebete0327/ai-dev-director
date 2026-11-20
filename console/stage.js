@@ -213,7 +213,7 @@ function liveModel(){
       steps:focus.steps.map(s=>({index:s.index,state:s.state,tests:s.tests})),passed:focus.passed_steps,updated:utc(focus.updated_at),id:focus.mission_id,
       deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile},
     usage:usage[win]||{by_role:{},by_provider:{},total:{calls:0,seconds:0,tokens:0,exact_tokens:0}},windows:{mission:!!usage.mission,today:!!usage.today,all:!!usage.all},
-    calls:(a.recent_calls||[]).slice(0,6).map(c=>({key:c.at+c.role+c.provider,role:c.role,provider:c.provider,seconds:c.seconds,tokens:c.tokens,exact:c.exact,status:c.status,at:utc(c.at)})),
+    calls:(a.recent_calls||[]).slice(0,6).map(c=>({key:c.at+c.role+c.provider,role:c.role,provider:c.provider,seconds:c.seconds,tokens:c.tokens,exact:c.exact,status:c.status,error:c.error||'',model:c.model||'',at:utc(c.at)})),
     events:(a.events||[]).slice(0,7).map(e=>({key:e.at+e.run_id+e.to_state,state:e.to_state,label:e.state_ko||e.to_state,sub:e.project,at:utc(e.at)})),
     stats,project:(status&&status.project_name)||(focus&&focus.project)||'—'};
 }
@@ -285,17 +285,28 @@ function paintDelivery(m){
   let box=$('mission-delivery');
   if(!box){box=el('div','','delivery');box.id='mission-delivery';$('mission-card').append(box);}
   box.replaceChildren();const ms=m.mission;
-  if(!ms||m.mode!=='live'||!ms.deliverable||ms.status==='RUNNING'){return;}
+  if(!ms||m.mode!=='live'||ms.status==='RUNNING'){return;}
+  if(!ms.deliverable){
+    if(ms.status==='INCOMPLETE'||ms.status==='STOPPED'||ms.status==='FAILED'){
+      const row=el('div','','delivery-actions');
+      const more=el('button','이어서 진행 (+4단계)');more.type='button';more.onclick=()=>decideMission(ms.id,'extend',{max_steps:(ms.steps.length||0)+4});
+      row.append(more);box.append(row);
+    }
+    return;
+  }
   const state=(ms.applied&&ms.applied.status)||ms.applyState||'pending',[label,cls]=APPLY_KO[state]||[state,''];
   const head=el('div','','delivery-head');head.append(el('span',(ms.source==='solomon'?'솔로몬 지시 · ':'')+'결과물','kicker'),el('span',label,'badge '+cls));box.append(head);
   if(ms.applied&&ms.applied.files)box.append(el('small',ms.applied.files.slice(0,6).join(', ')+(ms.applied.files.length>6?' 외 '+(ms.applied.files.length-6)+'개':''),'ai-sub'));
   if(state==='blocked'&&ms.applied&&ms.applied.blocks)box.append(el('small',ms.applied.blocks.join('; ').slice(0,220),'ai-sub'));
   if(state!=='applied'&&state!=='discarded'){
     const row=el('div','','delivery-actions');
-    const apply=el('button','원본에 적용');apply.type='button';apply.onclick=()=>decideMission(ms.id,'apply',{on_conflict:state==='blocked'?'skip':'block'});
-    const more=el('button','이어서 진행');more.type='button';more.onclick=()=>decideMission(ms.id,'extend');
+    if(ms.passed>0){
+      const apply=el('button','원본에 적용');apply.type='button';apply.onclick=()=>decideMission(ms.id,'apply',{on_conflict:state==='blocked'?'skip':'block'});
+      row.append(apply);
+    }
+    const more=el('button','이어서 진행');more.type='button';more.onclick=()=>decideMission(ms.id,'extend',{max_steps:(ms.steps.length||0)+4});
     const drop=el('button','폐기');drop.type='button';drop.className='ghost';drop.onclick=()=>{if(confirm('이 미션의 작업본을 폐기할까요? 기록은 남습니다.'))decideMission(ms.id,'discard');};
-    row.append(apply,more,drop);box.append(row);
+    row.append(more,drop);box.append(row);
     if(state==='blocked')box.append(el('small','"원본에 적용"을 다시 누르면 충돌 파일만 건너뛰고 나머지를 적용합니다.','ai-sub'));
   }
 }
@@ -334,7 +345,9 @@ function stateColor(m,state){
 function paintFeeds(m){
   paintFeed($('event-feed'),m.events,seenFeed.event,(li,e)=>{li.style.setProperty('--dot',e.color||stateColor(m,e.state));li.append(el('b',e.label),el('span',e.sub||''),el('time',e.when||ago(e.at)));});
   paintFeed($('call-feed'),m.calls,seenFeed.call,(li,c)=>{li.style.setProperty('--dot',c.status&&c.status!=='OK'?'#ff6b7a':(AI[c.provider]||{}).css||'#8fa0bd');
-    li.append(el('b',(AI[c.provider]||{name:c.provider}).name),el('span',(c.role||'?')+' · '+span(c.seconds)+(c.tokens?' · '+(c.exact?'':'~')+tok(c.tokens)+' 토큰':'')+(c.status&&c.status!=='OK'?' · '+c.status:'')),el('time',c.when||ago(c.at)));});
+    const errShort=c.error?(' · '+c.error.slice(0,48)):'';
+    li.append(el('b',(AI[c.provider]||{name:c.provider}).name),el('span',(c.role||'?')+' · '+span(c.seconds)+(c.tokens?' · '+(c.exact?'':'~')+tok(c.tokens)+' 토큰':'')+(c.status&&c.status!=='OK'?' · '+c.status+errShort:'')),el('time',c.when||ago(c.at)));
+    if(c.error){li.title=c.error;li.style.cursor='pointer';li.onclick=()=>notice((AI[c.provider]||{name:c.provider}).name+' 오류 상세: '+c.error);}});
 }
 function paintScene(m){
   const act=[.1,.1,.1],edge=[0,0,0],colors=[];

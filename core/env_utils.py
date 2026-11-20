@@ -20,6 +20,8 @@ def get_sanitized_env() -> Dict[str, str]:
     env = os.environ.copy()
     for k in FORBIDDEN_API_KEYS:
         env.pop(k, None)
+    # Prevent Antigravity CLI background self-updater lock collisions or mid-run binary moves
+    env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
     return env
 
 def resolve_cli(name: str) -> Optional[str]:

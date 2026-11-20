@@ -601,11 +601,9 @@ except Exception as e:
             "directly into the allowed paths."
         )
 
-        from core.model_settings import canonicalize_provider_model, effective_effort, is_effort_supported_for_model
-        chosen_model = canonicalize_provider_model("antigravity", self.model)
-        chosen_effort = effective_effort("antigravity", getattr(self, "effort", ""))
-        if chosen_model and not is_effort_supported_for_model("antigravity", chosen_model):
-            chosen_effort = ""
+        from core.model_settings import effective_effort, resolve_agy_cli_args
+        raw_effort = effective_effort("antigravity", getattr(self, "effort", ""))
+        chosen_model, chosen_effort = resolve_agy_cli_args(self.model, raw_effort, executable=self.executable)
         model_prefix = f"--model {chosen_model} " if chosen_model else ""
         effort_prefix = f"--effort {chosen_effort} " if chosen_effort else ""
         invocation_cmd = (
