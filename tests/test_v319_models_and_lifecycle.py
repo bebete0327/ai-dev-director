@@ -612,7 +612,7 @@ def test_expanded_timeouts_and_antigravity_slug_canonicalization_and_cli_default
         efforts={"GOOGLE": "high"},
     )
     assert r_orch._command("GOOGLE", "/bin/agy", "hi")[0] == [
-        "/bin/agy", "--model", "Orchestrator", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
+        "/bin/agy", "--model", "gemini-pro-orchestrator", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"
     ]
 
     # 4. If Antigravity rejects a tier-restricted custom model (e.g. gemini-4-carbon on non-Ultra -> exit 1),
@@ -654,5 +654,87 @@ def test_expanded_timeouts_and_antigravity_slug_canonicalization_and_cli_default
     assert ["--model", "gemini-4-carbon", "--effort", "high"] == seen_cmds[0][1:5]
     assert "--model" not in seen_cmds[1] and "--effort" not in seen_cmds[1]
     assert res["output"] == '{"files":[],"summary":"ok"}'
+
+
+def test_v320_agy_slug_catalog_build_id_and_zero_pass_continuation(http_server, tmp_path, monkeypatch):
+    import dashboard_server as d
+    from core import usage
+    from core.mission import MissionStore, latest_deliverable
+    from core.verifier import Verifier
+
+    d._ensure_schema()
+
+    # 1. /ops/state returns build_id, and launcher.is_companion_alive stops a server with mismatched build_id
+    code, body = request(http_server, "GET", "/ops/state")
+    assert code == 200
+    state = json.loads(body)
+    assert state.get("build_id") == launcher.get_build_id()
+    port = http_server.server_address[1]
+    assert launcher.is_companion_alive(port, expected_build_id=state["build_id"]) is True
+
+    stopped_ports = []
+    monkeypatch.setattr(launcher, "_stop_outdated_companion", lambda p, csrf_token="", timeout=1.5: stopped_ports.append((p, csrf_token)))
+    assert launcher.is_companion_alive(port, expected_build_id="old-stale-build-0000") is False
+    assert stopped_ports == [(port, "test-token")]
+
+    # 2. resolve_agy_cli_args maps bare names to `agy models` suffixed slugs, clamps Carbon xhigh->high,
+    #    and drops Ultra-only Carbon to '' (CLI default) when the signed-in Pro account's `agy models` lacks it!
+    pro_catalog = [
+        "gemini-4-neon-xhigh",
+        "gemini-4-neon-high",
+        "gemini-4-neon-medium",
+        "gemini-4-hydrogen-high",
+        "gemini-3.8-flash-medium",
+        "gemini-pro-orchestrator-neon",
+        "gemini-pro-orchestrator-argon",
+    ]
+    assert model_settings.resolve_agy_cli_args("Gemini 4 Neon", "high", available_slugs=pro_catalog) == ("gemini-4-neon-high", "")
+    assert model_settings.resolve_agy_cli_args("Gemini 4 Carbon", "xhigh", available_slugs=pro_catalog) == ("", "")
+    assert model_settings.resolve_agy_cli_args("Orchestrator (Neon)", "high", available_slugs=pro_catalog) == ("gemini-pro-orchestrator-neon", "")
+
+    ultra_catalog = pro_catalog + ["gemini-4-carbon-high", "gemini-pro-orchestrator"]
+    assert model_settings.resolve_agy_cli_args("Gemini 4 Carbon", "xhigh", available_slugs=ultra_catalog) == ("gemini-4-carbon-high", "")
+
+    # 3. Verifier automatically discovers root test_*.py (via pytest or unittest) when `tests/` folder does not exist
+    proj_no_tests_dir = tmp_path / "chef_hunter"
+    proj_no_tests_dir.mkdir()
+    (proj_no_tests_dir / "test_locks_unittest.py").write_text(
+        "import unittest\nclass LockTests(unittest.TestCase):\n    def test_lock_ok(self):\n        self.assertEqual(2 + 2, 4)\nif __name__ == '__main__':\n    unittest.main()\n",
+        encoding="utf-8",
+    )
+    ver = Verifier.verify(str(proj_no_tests_dir), test_cmd="python -m pytest tests/", git_checks=False)
+    assert ver["passed"] is True
+    assert ver["test_counts"]["passed"] >= 1
+
+    # 4. ai_usage records error_detail and surfaces it in recent_calls
+    rid = usage.call_started(["agy.exe", "--model", "gemini-4-carbon"], "build prompt")
+    usage.call_finished(
+        rid,
+        ["agy.exe", "--model", "gemini-4-carbon"],
+        "build prompt",
+        ProcessResult(exit_code=1, stdout="", stderr="INVALID_ARGUMENT: unknown model gemini-4-carbon", timed_out=False, duration_sec=6.2, pid=42),
+    )
+    rec = usage.recent_calls(5)[0]
+    assert rec["status"] == "ERROR"
+    assert "unknown model gemini-4-carbon" in rec["error"]
+
+    # 5. latest_deliverable preserves the last attempted worktree when a mission stopped with 0/6 passed steps
+    m_store = MissionStore(tmp_path / "missions_store")
+    wt6 = tmp_path / "wt_step6"
+    wt6.mkdir()
+    proj_target = tmp_path / "target_proj"
+    proj_target.mkdir()
+    m_store.save({
+        "mission_id": "MSN-261119-ZEROPASS",
+        "project_path": str(proj_target),
+        "goal": "locks",
+        "status": "INCOMPLETE",
+        "updated_at": "2026-11-19T20:30:00",
+        "base_worktree": None,
+        "steps": [
+            {"index": 6, "order": {"goal": "step6"}, "run_id": "RUN-6", "result": {"final_state": "FAIL", "worktree_path": str(wt6)}}
+        ],
+    })
+    assert latest_deliverable(str(proj_target), m_store) == str(wt6)
 
 

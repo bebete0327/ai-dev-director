@@ -319,8 +319,10 @@ class CompanionHandler(d.DashboardHandler):
         if path == '/classic':
             self.path = '/'
         elif path == '/ops/state':
+            from launcher import get_build_id
             report = ROOT / 'data' / 'cli_diagnostics.json'
             return self._send_json({'csrf': self.server.bridge_token,
+                'build_id': get_build_id(),
                 'orders': self.server.bridge.list(), 'allowed_projects': sorted(getattr(self.server.bridge, 'allowed', ())),
                 'diagnostics': json.loads(report.read_text(encoding='utf-8')) if report.exists() else None,
                 'status': d.cached_status_payload(), 'solomon_url': 'http://127.0.0.1:8710',

@@ -120,14 +120,20 @@ class ClaudeHead(BaseHead):
         self.logger.info(f"[Claude Head] Invoking CLI via ProcessTreeRunner: {self.executable} (cwd={cwd})")
 
         sanitized_env = get_sanitized_env()
+        guarded_prompt = (
+            "SYSTEM CONSTRAINT: Do NOT invoke Bash, Edit, Write, or any shell/command tool. "
+            "Director runs all tests and commands deterministically outside HEAD. "
+            "Use only supplied evidence (or read-only file inspection if strictly needed) and reply ONLY with the requested JSON.\n\n"
+            + prompt
+        )
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=cwd,
             env=sanitized_env,
             timeout=self.timeout,
-            no_output_timeout=self.no_progress_timeout,
+            no_output_timeout=None,
             heartbeat_interval=self.heartbeat_interval,
-            stdin_data=prompt
+            stdin_data=guarded_prompt
         )
 
         self.last_execution_info = {
@@ -216,7 +222,7 @@ class ClaudeHead(BaseHead):
             "Review the work order, builder output, automated verification results, and code review findings.\n\n"
             "STRICT PASS RULES:\n"
             "1. 'PASS': ONLY permitted if:\n"
-            "   - Automated build and tests passed.\n"
+            "   - Automated build and tests passed in RUN EVIDENCE.verification (the Director executes tests deterministically; neither Builder nor HEAD runs shell commands directly).\n"
             "   - NO existing functions, classes, or tests were deleted (unless permitted in allowed_deletions).\n"
             "   - NO baseline test regressions occurred.\n"
             "   - Reviewer reported NO P0/P1 issues and did NOT report accidental deletion of existing behaviors.\n"

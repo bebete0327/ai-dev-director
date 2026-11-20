@@ -176,9 +176,9 @@ class ClaudeReviewer:
             cwd=str(wt),
             env=get_sanitized_env(),
             timeout=self.timeout,
-            no_output_timeout=self.no_progress_timeout,
+            no_output_timeout=None,
             heartbeat_interval=self.heartbeat_interval,
-            stdin_data=review_prompt
+            stdin_data="SYSTEM CONSTRAINT: Do NOT invoke Bash or any shell/edit tool. Use supplied diff and test evidence only.\n\n" + review_prompt
         )
 
         self.last_execution_info = {

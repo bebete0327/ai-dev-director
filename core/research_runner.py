@@ -89,10 +89,8 @@ class TriadResearchRunner:
                 desc.extend(["--effort", effort])
             return cmd, prompt, " ".join(desc)
         if domain == "GOOGLE":
-            from core.model_settings import canonicalize_provider_model, is_effort_supported_for_model
-            chosen = canonicalize_provider_model("antigravity", chosen)
-            if chosen and not is_effort_supported_for_model("antigravity", chosen):
-                effort = ""
+            from core.model_settings import resolve_agy_cli_args
+            chosen, effort = resolve_agy_cli_args(chosen, effort, executable=executable)
             # Official AGY stream-json mode reads NDJSON from stdin. This avoids Windows command-line limits
             # without file-read tools or permission bypasses, and exposes an explicit final result event.
             message = {"event": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}}
@@ -104,8 +102,12 @@ class TriadResearchRunner:
             if effort:
                 cmd.extend(["--effort", effort])
                 desc.extend(["--effort", effort])
-            cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"])
-            desc.extend(["--input-format", "stream-json", "--output-format", "stream-json", "--sandbox", "<stdin>"])
+            cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
+            desc.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
+            if not getattr(self, "_disable_google_sandbox", False):
+                cmd.append("--sandbox")
+                desc.append("--sandbox")
+            desc.append("<stdin>")
             return (
                 cmd,
                 json.dumps(message, ensure_ascii=False) + "\n",
@@ -226,8 +228,12 @@ class TriadResearchRunner:
             (self.models or {}).get("GOOGLE") or (self.efforts or {}).get("GOOGLE")
         )
         self._use_cli_default = False
+        self._disable_google_sandbox = False
+        budget = self.MAX_ATTEMPTS
+        attempt_number = 0
         try:
-            for attempt_number in range(1, self.MAX_ATTEMPTS + 1):
+            while attempt_number < budget:
+                attempt_number += 1
                 retry_reason = attempts[-1]["error"] if attempts else None
                 try:
                     # Retries always resend the identical original `prompt` - never the previous attempt's
@@ -241,7 +247,19 @@ class TriadResearchRunner:
                     return result
                 except ResearchProviderCallError as exc:
                     msg = str(exc)
-                    if stage == 'BUILDING' and msg.startswith('GOOGLE_STREAM_FAILED:') and 'output token limit' in msg.lower():
+                    low_msg = msg.lower()
+                    if (
+                        normalized == "GOOGLE"
+                        and not self._disable_google_sandbox
+                        and "sandbox" in low_msg
+                        and ("not supported" in low_msg or "failed to set up sandbox" in low_msg)
+                    ):
+                        # Older Windows builds where `agy --sandbox` fails hard: drop `--sandbox` (ProposalBuilder/GoogleHead
+                        # run in an empty temp dir with "Do not use tools" + git status read-only verification).
+                        self._disable_google_sandbox = True
+                        exc.retryable = True
+                        budget = min(self.MAX_ATTEMPTS + 2, budget + 1)
+                    elif stage == 'BUILDING' and msg.startswith('GOOGLE_STREAM_FAILED:') and 'output token limit' in low_msg:
                         exc.retryable = True
                     elif (
                         has_custom_google_opts
@@ -250,9 +268,10 @@ class TriadResearchRunner:
                         and ErrorCategory.classify(msg) not in (ErrorCategory.AUTH, ErrorCategory.PROVIDER_UNAVAILABLE, ErrorCategory.CONFIG_ERROR)
                     ):
                         # If the operator selected an Ultra-only or unsupported --model/--effort on Antigravity,
-                        # fall back to the signed-in account's CLI default model instead of failing over to Claude.
+                        # fall back to the signed-in account's CLI default model without burning the transient retry budget.
                         self._use_cli_default = True
                         exc.retryable = True
+                        budget = min(self.MAX_ATTEMPTS + 2, budget + 1)
                     record = dict(exc.meta)
                     record.update({
                         "attempt_number": attempt_number, "outcome": "FAILED",
@@ -260,10 +279,11 @@ class TriadResearchRunner:
                     })
                     attempts.append(record)
                     last_error = exc
-                    if not exc.retryable or attempt_number >= self.MAX_ATTEMPTS:
+                    if not exc.retryable or attempt_number >= budget:
                         break
         finally:
             self._use_cli_default = False
+            self._disable_google_sandbox = False
         prior = attempts[:-1]
         final_meta = dict(attempts[-1]) if attempts else {}
         final_meta["attempts"] = prior

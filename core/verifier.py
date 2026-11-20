@@ -25,6 +25,8 @@ class Verifier:
             cwd_str = str(cwd)
             current_ppath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = f"{cwd_str}{os.pathsep}{current_ppath}" if current_ppath else cwd_str
+            # Prevent stale .pyc hits when Baseline Gate and Builder overwrite a .py file with identical byte length in <1s
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
 
             if isinstance(cmd_str, list):
                 argv = list(cmd_str)
@@ -69,17 +71,41 @@ class Verifier:
                 }
 
             combined_output = (res.stdout or "") + ("\n" + res.stderr if res.stderr else "")
-            if (
-                res.exit_code != 0
-                and "no module named pytest" in combined_output.lower()
-                and any("pytest" in str(tok).lower() for tok in argv)
-            ):
+            low_out = combined_output.lower()
+            is_pytest_invocation = any("pytest" in str(tok).lower() for tok in argv)
+            pytest_missing = "no module named pytest" in low_out
+            default_tests_dir_missing = (
+                is_pytest_invocation
+                and any(str(tok).rstrip("/\\") == "tests" for tok in argv)
+                and not (cwd / "tests").is_dir()
+                and res.exit_code in (4, 5)
+            )
+            if res.exit_code != 0 and is_pytest_invocation and (pytest_missing or default_tests_dir_missing):
                 base_exe = os.path.basename(str(argv[0])).lower()
                 py_exe = (
                     argv[0]
                     if ("python" in base_exe or base_exe in ("py", "py.exe"))
                     else (shutil.which("python") or shutil.which("python3") or sys.executable)
                 )
+                if not pytest_missing and default_tests_dir_missing:
+                    # pytest IS installed, just tests/ folder doesn't exist (tests are at root or subpackages)
+                    pt_argv = [py_exe, "-m", "pytest"]
+                    pt_res: ProcessResult = ProcessTreeRunner.run(
+                        argv=pt_argv,
+                        cwd=cwd_str,
+                        env=env,
+                        timeout=timeout,
+                        no_output_timeout=None,
+                    )
+                    pt_out = ((pt_res.stdout or "") + ("\n" + pt_res.stderr if pt_res.stderr else "")).strip()
+                    if not pt_res.timed_out and pt_res.exit_code != 5:
+                        return {
+                            "command": " ".join(pt_argv),
+                            "executed": True,
+                            "passed": pt_res.exit_code == 0,
+                            "exit_code": pt_res.exit_code,
+                            "output": f"[tests/ 폴더 없음 -> 프로젝트 루트 pytest 자동 실행]\n{pt_out}",
+                        }
                 start_dirs = ["tests", "."] if (cwd / "tests").is_dir() else ["."]
                 for sdir in start_dirs:
                     ut_argv = [py_exe, "-m", "unittest", "discover", "-s", sdir, "-p", "test*.py", "-v"]
@@ -102,12 +128,13 @@ class Verifier:
                     if "ran 0 tests" in ut_out.lower() and sdir != start_dirs[-1]:
                         continue
                     ut_passed = (ut_res.exit_code == 0) and ("ran 0 tests" not in ut_out.lower())
+                    reason_tag = "pytest 미설치 환경" if pytest_missing else "루트 unittest 감지"
                     return {
                         "command": " ".join(ut_argv),
                         "executed": True,
                         "passed": ut_passed,
                         "exit_code": ut_res.exit_code if ut_passed else (ut_res.exit_code or 1),
-                        "output": f"[pytest 미설치 환경 -> 표준 unittest 자동 실행]\n{ut_out}",
+                        "output": f"[{reason_tag} -> 표준 unittest 자동 실행]\n{ut_out}",
                     }
             passed = (res.exit_code == 0)
             return {
@@ -200,12 +227,19 @@ class Verifier:
         if fail_match:
             counts["failed"] = int(fail_match.group(1))
 
-        # Unittest pattern: 'Ran 4 tests in 0.001s'
-        ran_match = re.search(r"Ran\s+(\d+)\s+tests", output)
+        # Unittest pattern: 'Ran 4 tests in 0.001s' or 'Ran 1 test in 0.001s'
+        ran_match = re.search(r"Ran\s+(\d+)\s+tests?", output)
         if ran_match:
             counts["total"] = int(ran_match.group(1))
-            if "OK" in output:
+            if re.search(r"^OK\b", output, re.MULTILINE):
                 counts["passed"] = counts["total"]
+            else:
+                f_m = re.search(r"failures=(\d+)", output)
+                e_m = re.search(r"errors=(\d+)", output)
+                failed = (int(f_m.group(1)) if f_m else 0) + (int(e_m.group(1)) if e_m else 0)
+                if failed:
+                    counts["failed"] = failed
+                    counts["passed"] = max(0, counts["total"] - failed)
 
         if counts["total"] == 0:
             counts["total"] = counts["passed"] + counts["failed"]

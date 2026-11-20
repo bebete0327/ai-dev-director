@@ -34,7 +34,7 @@ def context() -> Dict[str, Any]:
 
 
 def provider_of(argv0: str) -> Optional[str]:
-    base = os.path.basename(str(argv0 or "")).lower()
+    base = os.path.basename(str(argv0 or "").replace("\\", "/")).lower()
     return PROVIDER_BY_CLI.get(base.split(".")[0])
 
 
@@ -112,12 +112,15 @@ def _conn() -> sqlite3.Connection:
         provider TEXT NOT NULL, role TEXT, stage TEXT, run_id TEXT, mission_id TEXT, pid INTEGER,
         duration_sec REAL, prompt_chars INTEGER, output_chars INTEGER,
         tokens_in INTEGER, tokens_out INTEGER, tokens_total INTEGER, tokens_exact INTEGER DEFAULT 0,
-        exit_code INTEGER, source TEXT DEFAULT 'live', model TEXT DEFAULT '', effort TEXT DEFAULT '')""")
+        exit_code INTEGER, source TEXT DEFAULT 'live', model TEXT DEFAULT '', effort TEXT DEFAULT '',
+        error_detail TEXT DEFAULT '')""")
     cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_usage)").fetchall()}
     if "model" not in cols:
         conn.execute("ALTER TABLE ai_usage ADD COLUMN model TEXT DEFAULT ''")
     if "effort" not in cols:
         conn.execute("ALTER TABLE ai_usage ADD COLUMN effort TEXT DEFAULT ''")
+    if "error_detail" not in cols:
+        conn.execute("ALTER TABLE ai_usage ADD COLUMN error_detail TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_started ON ai_usage(started_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_mission ON ai_usage(mission_id)")
     return conn
@@ -155,6 +158,26 @@ def _answer_text(provider: str, stdout: str) -> str:
     return stdout if answer is None else answer
 
 
+def _extract_error_detail(provider: str, stdout: str, stderr: str, result: Any) -> str:
+    if getattr(result, "timed_out", False):
+        return str(getattr(result, "timeout_reason", "") or "timed out")[:240]
+    if provider == "GOOGLE":
+        for line in reversed((stdout or "").splitlines()):
+            try:
+                ev = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(ev, dict) and ev.get("event") == "result" and isinstance(ev.get("result"), dict):
+                res_obj = ev["result"]
+                if res_obj.get("status") and res_obj.get("status") != "SUCCESS":
+                    return str(res_obj.get("error") or res_obj.get("status"))[:240]
+    raw = (stderr or stdout or "").strip()
+    if not raw:
+        return ""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    return (lines[-1] if lines else raw)[:240]
+
+
 def call_finished(row_id: Optional[int], argv: List[str], prompt: Optional[str], result: Any) -> None:
     if row_id is None:
         return
@@ -169,20 +192,34 @@ def call_finished(row_id: Optional[int], argv: List[str], prompt: Optional[str],
     else:
         tin, tout, total, is_exact = est_in, est_out, est_in + est_out, 0
     exit_code = getattr(result, "exit_code", None)
-    status = "TIMEOUT" if getattr(result, "timed_out", False) else ("OK" if exit_code == 0 else "ERROR")
+    err_detail = _extract_error_detail(provider, stdout, stderr, result)
+    stream_failed = False
+    if provider == "GOOGLE" and exit_code == 0 and err_detail:
+        for line in reversed((stdout or "").splitlines()):
+            try:
+                ev = json.loads(line)
+                if isinstance(ev, dict) and ev.get("event") == "result" and isinstance(ev.get("result"), dict):
+                    stream_failed = ev["result"].get("status") not in (None, "SUCCESS")
+                    break
+            except (TypeError, ValueError):
+                continue
+    status = "TIMEOUT" if getattr(result, "timed_out", False) else ("OK" if (exit_code == 0 and not stream_failed) else "ERROR")
+    if status == "OK":
+        err_detail = ""
     with _conn() as conn:
         conn.execute(
             "UPDATE ai_usage SET ended_at=?, status=?, duration_sec=?, output_chars=?, tokens_in=?, tokens_out=?, "
-            "tokens_total=?, tokens_exact=?, exit_code=? WHERE id=?",
+            "tokens_total=?, tokens_exact=?, exit_code=?, error_detail=? WHERE id=?",
             (datetime.utcnow().isoformat(), status, getattr(result, "duration_sec", None), len(stdout),
-             tin, tout, total, is_exact, exit_code, row_id))
+             tin, tout, total, is_exact, exit_code, err_detail, row_id))
 
 
 def call_failed(row_id: Optional[int], error: BaseException) -> None:
     if row_id is None:
         return
     with _conn() as conn:
-        conn.execute("UPDATE ai_usage SET ended_at=?, status='ERROR' WHERE id=?", (datetime.utcnow().isoformat(), row_id))
+        conn.execute("UPDATE ai_usage SET ended_at=?, status='ERROR', error_detail=? WHERE id=?",
+                     (datetime.utcnow().isoformat(), str(error)[:240], row_id))
 
 
 # ------------------------------------------------------------------ backfill of calls made before the ledger existed
@@ -283,6 +320,8 @@ def recent_calls(limit: int = 20) -> List[Dict[str, Any]]:
              "provider_name": PROVIDER_NAME.get(r["provider"], r["provider"]), "role": r["role"], "stage": r["stage"],
              "status": r["status"], "seconds": r["duration_sec"], "tokens": r["tokens_total"],
              "exact": bool(r["tokens_exact"]), "run_id": r["run_id"], "mission_id": r["mission_id"],
+             "model": r["model"] if "model" in r.keys() else "",
+             "error": r["error_detail"] if "error_detail" in r.keys() else "",
              "source": r["source"]} for r in rows]
 
 
